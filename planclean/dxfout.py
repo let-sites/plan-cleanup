@@ -36,7 +36,8 @@ def placement(s, blk):
     x, y, rot = s.x, s.y, 0.0
     if s.cls in ORIENTED and blk is not None:
         rot = rotation_deg(s)
-        off = block_offset(blk)
+        # your blocks have their insert point on the wall: put it on the wall line the symbol sits on
+        off = s.wall if getattr(s, 'wall', None) is not None else block_offset(blk)
         x -= s.dx * off; y -= s.dy * off
     return x, y, rot
 

@@ -14,6 +14,7 @@ class Sym:
     mods: list = field(default_factory=list)
     review: str = ""         # why a person should look at it ('' = fine)
     src: tuple = ()          # where it came from on the source sheet (page points)
+    wall: float | None = None   # distance from the centre back to the wall it sits on (drawing units)
 
 @dataclass
 class Text:
@@ -31,6 +32,7 @@ class Result:
     texts: list = field(default_factory=list)
     stats: dict = field(default_factory=dict)
     dropped_labels: list = field(default_factory=list)
+    original: list = field(default_factory=list) # builder geometry that was removed or redrawn, drawing units
     to_page: object = None                       # function drawing units -> page points (for the viewer)
 
     def review_items(self):

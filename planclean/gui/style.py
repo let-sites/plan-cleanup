@@ -27,9 +27,12 @@ QPushButton[kind="big"] {{ padding: 9px 18px; font-weight: 600; }}
 QComboBox, QLineEdit, QDoubleSpinBox {{ background: white; border: 1px solid {LINE}; border-radius: 6px; padding: 6px 8px; min-height: 20px; }}
 QListWidget, QTableWidget {{ background: white; border: 1px solid {LINE}; border-radius: 8px; }}
 QListWidget::item:selected {{ background: #e3f1f8; color: {INK}; }}
-QListWidget#sheets {{ background: {BG}; border: none; }}
-QListWidget#sheets::item {{ background: white; border: 1px solid {LINE}; border-radius: 8px; padding: 6px; margin: 2px; }}
-QListWidget#sheets::item:selected {{ background: #e3f1f8; border: 2px solid {ACCENT}; }}
+QListWidget#sheets {{ background: {BG}; border: none; outline: none; }}
+QListWidget#sheets::item {{ border-radius: 6px; padding: 4px 10px; margin: 1px 0; }}
+QListWidget#sheets::item:hover {{ background: #edf3f7; }}
+QListWidget#sheets::item:selected {{ background: {BLUE}; color: {BLUE_TEXT}; font-weight: 600; }}
+QProgressBar {{ background: #e6eef3; border: none; border-radius: 4px; }}
+QProgressBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
 QStatusBar {{ background: white; color: {MUTED}; border-top: 1px solid {LINE}; }}
 QLabel[kind="muted"] {{ color: {MUTED}; }}
 QProgressDialog {{ background: white; }}

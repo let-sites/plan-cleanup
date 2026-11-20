@@ -182,6 +182,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         removed['symbol parts'] += int(drop.sum())
         return out
     wire_pieces = []                 # connected polylines of the kept electrical paths
+    kept_verbatim = set()
     for k, p in enumerate(pl):
         rl = role(p); r = p['rect']
         if rl == 'remove': removed['removed pens'] += 1; continue
@@ -206,9 +207,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if rl == 'electrical':
             for q in wiring.pieces_of(polylines(p)): wire_pieces += trim(q)
             continue
-        out_role = rl
+        out_role = rl; kept_verbatim.add(k)
         for q in polylines(p):
             res.lines.append((out_role, [tx(*v) for v in q], is_filled(p) and len(q) > 2))
+
+    # what the builder had that is not in the result as-is (for the 'show what was removed' view)
+    res.original = [[tx(*v) for v in q] for k, p in enumerate(pl) if k not in kept_verbatim for q in polylines(p)]
 
     # 5b. wiring: join the builder's dashes back together and redraw each wire as one clean
     #     arc (or line) that runs from the centre of one symbol to the centre of the other
@@ -241,6 +245,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']))
         d, (ux, uy) = facing(h['x'], h['y'])
         s.dx, s.dy = ux, -uy
+        if s.cls in ORIENTED and d <= 18: s.wall = d * K      # the block's insert point goes on this wall line
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"
         if not s.review and s.cls in ORIENTED and d > 18: s.review = 'No wall nearby to face'
         res.symbols.append(s)

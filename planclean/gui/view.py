@@ -24,6 +24,7 @@ class SheetView(QGraphicsView):
         self.mode = 'pan'; self._start = None; self._band = None
         self.page_item = None; self.region_item = None; self.overlay = []
         self.setBackgroundBrush(QColor('#e9e9e9'))
+        self._zb = None; self._zoom_buttons()
 
     def set_sheet(self, pixmap):
         self.scene_.clear(); self.overlay = []; self.region_item = None
@@ -33,8 +34,46 @@ class SheetView(QGraphicsView):
 
     def set_mode(self, mode):
         self.mode = mode
-        self.setDragMode(QGraphicsView.ScrollHandDrag if mode == 'pan' else QGraphicsView.NoDrag)
+        # on the cleaned plan, dragging empty space moves the page; clicking a symbol selects it
+        self.setDragMode(QGraphicsView.ScrollHandDrag if mode in ('pan', 'review') else QGraphicsView.NoDrag)
         self.viewport().setCursor(Qt.CrossCursor if mode in ('box', 'teach') else Qt.OpenHandCursor)
+
+    def _zoom_buttons(self):
+        from PySide6.QtWidgets import QWidget, QHBoxLayout, QToolButton
+        w = QWidget(self); w.setObjectName('zoombar')
+        w.setStyleSheet('#zoombar{background:white;border:1px solid #dfe3e7;border-radius:8px}'
+                        'QToolButton{border:none;padding:4px 10px;font-size:16px;font-weight:600;color:#1f2a33}'
+                        'QToolButton:hover{background:#edf3f7;border-radius:6px}')
+        h = QHBoxLayout(w); h.setContentsMargins(4, 2, 4, 2); h.setSpacing(2)
+        for text, tip, fn in (('−', 'Zoom out', lambda: self.zoom(0.8)), ('+', 'Zoom in', lambda: self.zoom(1.25)),
+                              ('Fit', 'Show the whole sheet', self.fit)):
+            b = QToolButton(); b.setText(text); b.setToolTip(tip); b.clicked.connect(fn); h.addWidget(b)
+        w.adjustSize(); self._zb = w
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if getattr(self, '_zb', None) is not None:
+            self._zb.move(self.viewport().width() - self._zb.width() - 14, self.viewport().height() - self._zb.height() - 14)
+
+    def zoom(self, f, at=None):
+        if at is not None:
+            self.setTransformationAnchor(QGraphicsView.NoAnchor)
+            old = self.mapToScene(at.toPoint()) if hasattr(at, 'toPoint') else self.mapToScene(at)
+            self.scale(f, f); self.centerOn(old)
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        else:
+            self.setTransformationAnchor(QGraphicsView.AnchorViewCenter); self.scale(f, f)
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+
+    def fit(self):
+        target = self.region_item if (self.region_item is not None and self.mode == 'review') else self.page_item
+        if target is not None: self.fitInView(target, Qt.KeepAspectRatio)
+
+    def mouseDoubleClickEvent(self, e):
+        # double-click zooms in on that spot (Shift + double-click zooms out)
+        if self.mode in ('box', 'pan', 'review') and e.button() == Qt.LeftButton:
+            self.zoom(0.5 if e.modifiers() & Qt.ShiftModifier else 2.0, e.position()); return
+        super().mouseDoubleClickEvent(e)
 
     def wheelEvent(self, e):
         # trackpad two-finger scroll moves around; a mouse wheel (or Ctrl/Cmd + scroll) zooms
@@ -98,6 +137,8 @@ class SheetView(QGraphicsView):
             r = self._band.rect(); self.scene_.removeItem(self._band); self._band = None
             if r.width() > 20 and r.height() > 20:
                 self.show_region(r); self.regionDrawn.emit(r)
+            elif r.width() < 3 and r.height() < 3:
+                self.zoom(2.0, e.position())        # a plain click zooms in on that spot
             return
         super().mouseReleaseEvent(e)
 

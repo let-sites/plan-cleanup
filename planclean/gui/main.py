@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySe
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView)
+    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView, QProgressBar)
 
 from planclean import __version__
 from planclean.profile import Profile, Settings, safe_name
@@ -113,11 +113,7 @@ class MainWindow(QMainWindow):
         self.info.setText('&nbsp;&nbsp;&nbsp;'.join(parts))
 
     def _docks(self):
-        self.pages = QListWidget(); self.pages.setObjectName('sheets')
-        self.pages.setViewMode(QListView.IconMode); self.pages.setFlow(QListView.TopToBottom); self.pages.setWrapping(False)
-        self.pages.setMovement(QListView.Static); self.pages.setResizeMode(QListView.Adjust)
-        self.pages.setIconSize(QSize(THUMB_W, THUMB_W)); self.pages.setSpacing(6); self.pages.setUniformItemSizes(True)
-        self.pages.setFixedWidth(THUMB_W + 44)
+        self.pages = QListWidget(); self.pages.setObjectName('sheets'); self.pages.setFixedWidth(190)
         self.pages.currentRowChanged.connect(self.on_page)
         side = QWidget(); sv = QVBoxLayout(side); sv.setContentsMargins(10, 10, 6, 10)
         hdr = QLabel('<b>Sheets</b>'); hdr.setStyleSheet('font-size:15px'); sv.addWidget(hdr)
@@ -148,6 +144,11 @@ class MainWindow(QMainWindow):
         self.area_lbl = QLabel(''); self.area_lbl.setWordWrap(True); v.addWidget(self.area_lbl)
         self.clean_btn = _big('Clean up this plan', primary=True); self.clean_btn.setEnabled(False)
         self.clean_btn.clicked.connect(self.clean_clicked); v.addWidget(self.clean_btn)
+        self.prog = QWidget(); pv = QVBoxLayout(self.prog); pv.setContentsMargins(0, 8, 0, 0)
+        self.prog_lbl = QLabel(''); pv.addWidget(self.prog_lbl)
+        self.prog_bar = QProgressBar(); self.prog_bar.setRange(0, 0); self.prog_bar.setTextVisible(False); self.prog_bar.setFixedHeight(8); pv.addWidget(self.prog_bar)
+        self.prog_cancel = QPushButton('Cancel'); pv.addWidget(self.prog_cancel, 0, Qt.AlignLeft)
+        self.prog.hide(); v.addWidget(self.prog)
         v.addStretch(); return w
 
     def clean_clicked(self):
@@ -186,7 +187,8 @@ class MainWindow(QMainWindow):
         v.addWidget(self._step(3, 'Check it and save', 'Anything the app wasn\'t sure about is in <span style="color:#d00000">red</span> and listed below. '
                                'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
-        self.show_orig = QCheckBox('Show the builder\'s sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(self.draw_result); v.addWidget(self.show_orig)
+        self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
+        self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(self.draw_result); v.addWidget(self.show_orig)
         v.addWidget(QLabel('<b>Needs a look</b>'))
         self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); v.addWidget(self.review, 3)
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
@@ -197,8 +199,13 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         b = QPushButton('Redraw the box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
         b = QPushButton('Teach more symbols'); b.clicked.connect(lambda: self.tabs.setCurrentIndex(1)); row.addWidget(b)
-        b = QPushButton('Clean again'); b.clicked.connect(self.run_clean); row.addWidget(b); v.addLayout(row)
+        b = QPushButton('Start over'); b.setToolTip('Run the cleanup again on the same box. Your changes are lost.')
+        b.clicked.connect(self.start_over); row.addWidget(b); v.addLayout(row)
         return w
+
+    def start_over(self):
+        if QMessageBox.question(self, 'Start over', 'Run the cleanup again on the same box?\n\nAny changes you made in the review will be lost.') == QMessageBox.Yes:
+            self.run_clean()
 
     def redraw_box(self):
         self.result = None; self.view.clear_overlay(); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
@@ -259,10 +266,8 @@ class MainWindow(QMainWindow):
             self.sheets.append(DwgSheet(self.dwg_doc, Path(f).name))
         self.file_name = Path(f).name
         self.setWindowTitle(f'Plan Cleanup {__version__} — {Path(f).name}')
-        blank = QPixmap(THUMB_W, int(THUMB_W * 0.65)); blank.fill(Qt.white)
         for sh in self.sheets:
-            it = QListWidgetItem(QIcon(blank), sh.title); it.setSizeHint(QSize(THUMB_W + 16, int(THUMB_W * 0.65) + 34)); self.pages.addItem(it)
-        self._thumb_queue = list(range(len(self.sheets))); self._thumb_timer.start(0)
+            it = QListWidgetItem(sh.title); it.setSizeHint(QSize(160, 34)); self.pages.addItem(it)
         self.pages.blockSignals(False)
         self.pages.setCurrentRow(min(index, len(self.sheets) - 1)); self.pages.setFocus()
 
@@ -401,24 +406,26 @@ class MainWindow(QMainWindow):
 
     def run_pdf_job(self, path, index, region, prof):
         job = CleanJob(path, index, region, prof)
-        dlg = QProgressDialog('Starting…', 'Cancel', 0, 0, self)
-        dlg.setWindowTitle('Cleaning the plan'); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
+        self.tabs.setCurrentIndex(0); self.clean_btn.setEnabled(False); self.prog.show()
         state = {'step': 'Starting'}
         timer = QTimer(self)
         def stop():
-            timer.stop(); dlg.close(); self._job = None
+            timer.stop(); self.prog.hide(); self.clean_btn.setEnabled(True); self._job = None
+            try: self.prog_cancel.clicked.disconnect()
+            except Exception: pass
         def tick():
             for kind, payload in job.poll():
                 if kind == 'progress': state['step'] = payload
                 elif kind == 'done': stop(); self.on_cleaned(attach_to_page(payload, prof, region)); return
                 elif kind == 'failed': stop(); QMessageBox.critical(self, 'Something went wrong', str(payload)[-2000:]); return
-            dlg.setLabelText(f"{state['step']}…  ({int(job.elapsed())} s)")
+            self.prog_lbl.setText(f"<b>Cleaning…</b> {state['step']} ({int(job.elapsed())} s)")
+            self.statusBar().showMessage(f"Cleaning: {state['step']}")
         def cancel():
             if job.finished: return
             job.cancel(); stop(); self.statusBar().showMessage('Cleaning cancelled.')
-        dlg.canceled.connect(cancel)
+        self.prog_cancel.clicked.connect(cancel)
         timer.timeout.connect(tick)
-        self._job = job; job.start(); dlg.show(); timer.start(200)
+        self._job = job; job.start(); tick(); timer.start(200)
 
     def on_cleaned(self, res: Result):
         self.result = res; self.tabs.setCurrentIndex(2); self.view.set_mode('review'); self.statusBar().clearMessage()
@@ -442,6 +449,9 @@ class MainWindow(QMainWindow):
         for role, pts, f in self.result.lines:
             polys.setdefault(role, []).append([self._view_pt(*p) for p in pts])
         from planclean.wiring import arc_points
+        if self.show_removed.isChecked() and getattr(self.result, 'original', None):
+            it = self.view.add_paths([[self._view_pt(*p) for p in pts] for pts in self.result.original], '#f08c8c', 0)
+            it.setOpacity(0.7); it.setZValue(5)
         for role, cx, cy, r, a0, a1 in self.result.arcs:
             polys.setdefault(role, []).append([self._view_pt(*p) for p in arc_points(cx, cy, r, a0, a1)])
         for role, ps in polys.items():

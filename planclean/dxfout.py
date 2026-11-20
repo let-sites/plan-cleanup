@@ -50,11 +50,16 @@ def _placeholders(doc):
     if 'UNMAPPED' not in doc.blocks:
         b = doc.blocks.new('UNMAPPED'); b.add_circle((0, 0), 3); b.add_line((-3, 0), (3, 0)); b.add_line((0, -3), (0, 3))
 
-def write_dxf(res: Result, path, library_doc, block_for, text_room=9.0, text_note=5.0):
+def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_note=3.0,
+              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes'):
     out = ezdxf.new('R2018', setup=True)
     out.header['$INSUNITS'] = 1  # inches
     for name, col in LAYERS:
         out.layers.add(name, color=col)
+    # your own layers; when pasted into a template, the template's layer settings win
+    if text_layer not in out.layers: out.layers.add(text_layer, color=1)
+    if symbol_layer not in out.layers: out.layers.add(symbol_layer, color=7)
+    if text_style not in out.styles: out.styles.add(text_style, font='arial.ttf')
     wanted = sorted({block_for(s.cls) for s in res.symbols if block_for(s.cls)})
     have = [n for n in wanted if library_doc is not None and library_doc.blocks.get(n) is not None]
     if have:
@@ -80,15 +85,15 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=9.0, text_not
         if not name or out.blocks.get(name) is None:
             missing.add(name or s.cls); name = 'UNMAPPED'
         x, y, rot = placement(s, out.blocks.get(name))
-        msp.add_blockref(name, (x, y), dxfattribs={'layer': 'ELEC-SYMBOLS', 'rotation': rot})
+        msp.add_blockref(name, (x, y), dxfattribs={'layer': symbol_layer, 'rotation': rot})
         if s.review:
             msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})
     for t in res.texts:
         if t.kind == 'room':
-            msp.add_text(t.lines[0], height=text_room, dxfattribs={'layer': 'ELEC-TEXT'}).set_placement(
-                (t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)
+            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_room,
+                                                           'insert': (t.x, t.y), 'attachment_point': 5})
         else:
-            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': 'ELEC-TEXT', 'char_height': text_note,
+            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_note,
                                                            'insert': (t.x, t.y), 'attachment_point': 5})
         if t.review:
             msp.add_circle((t.x, t.y), 14, dxfattribs={'layer': 'REVIEW'})

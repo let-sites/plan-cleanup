@@ -495,7 +495,8 @@ class MainWindow(QMainWindow):
         want_dwg = f.lower().endswith('.dwg') or (exe and 'dwg' in chosen and not f.lower().endswith('.dxf'))
         tmp = Path(tempfile.mkdtemp()) / 'cleaned.dxf'
         missing = dxfout.write_dxf(self.result, str(tmp), lib, self.settings.block_for,
-                                   self.settings.text_height_room, self.settings.text_height_note)
+                                   self.settings.text_height_room, self.settings.text_height_note,
+                                   self.settings.text_layer, self.settings.symbol_layer, self.settings.text_style)
         try:
             if want_dwg:
                 if not f.lower().endswith('.dwg'): f += '.dwg'

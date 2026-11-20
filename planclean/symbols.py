@@ -7,6 +7,7 @@ SYMBOL_TYPES = {
     "ceiling_light":  ("Ceiling light",                        "standard_ceiling_light_lisp", False),
     "wall_light":     ("Wall light / sconce",                  "wall_light_lisp", True),
     "recessed_can":   ("Recessed can",                         "can_lisp", False),
+    "pendant":        ("Pendant light",                        "standard_ceiling_light_lisp", False),
     "disk_light":     ("Disk light",                           "standard_disklight_lisp", False),
     "fan":            ("Ceiling fan",                          "standard_fan_lisp", False),
     "exhaust_fan":    ("Exhaust fan",                          "standard_exhaust_lisp", False),

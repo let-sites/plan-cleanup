@@ -79,11 +79,18 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         """Distance to the wall a symbol sits on and the unit direction pointing away from it (page coords).
         Walls are found straight up, down, left or right, so symbols always sit square to them.
         hint: ends of the builder's own stem/tails; a wall right at the end of one wins."""
-        for ex, ey in hint:
-            vx, vy = ex - x, ey - y
-            dx_, dy_ = (math.copysign(1, vx), 0) if abs(vx) >= abs(vy) else (0, math.copysign(1, vy))
-            dd = wall_along(x, y, dx_, dy_, reach)
-            if dd is not None and abs(dd - abs(vx * dx_ + vy * dy_)) < 3.0: return dd, (-dx_, -dy_)
+        # hint is a flat list of stroke end pairs; the longest straight stroke (the stem) speaks first
+        segs = sorted(((hint[i], hint[i + 1]) for i in range(0, len(hint) - 1, 2)),
+                      key=lambda ab: -math.hypot(ab[1][0] - ab[0][0], ab[1][1] - ab[0][1]))
+        for (ax_, ay_), (bx_, by_) in segs:
+            sx, sy = bx_ - ax_, by_ - ay_
+            if math.hypot(sx, sy) < 6 or min(abs(sx), abs(sy)) * 3 > max(abs(sx), abs(sy)): continue   # short or slanted
+            for ex, ey in ((ax_, ay_), (bx_, by_)):
+                vx, vy = ex - x, ey - y
+                # look along the stem, toward this end of it
+                dx_, dy_ = (math.copysign(1, vx or 1), 0) if abs(sx) >= abs(sy) else (0, math.copysign(1, vy or 1))
+                dd = wall_along(x, y, dx_, dy_, reach)
+                if dd is not None and abs(dd - abs(vx * dx_ + vy * dy_)) < 3.0: return dd, (-dx_, -dy_)
         best = None
         for dx_, dy_ in RAYS:
             dd = wall_along(x, y, dx_, dy_, reach)
@@ -120,6 +127,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 if math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < 60:
                     h['cls'] = 'fan'; h['mods'].append('note: ' + ' '.join(g['text'] for g in group))
                     h['review'] = 'Turned into a fan from the builder note'
+                    for g in group: h.setdefault('note_boxes', []).append(g['bb'])   # wires drawn to the note go to the fan
                     for g in group: used.add(id(g))
 
     # 4. words -> room names, kept notes, dropped labels
@@ -143,7 +151,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 5. which paths stay
     progress('Cleaning')
-    radius = {'switch': 5.5, 'dimmer': 5.5}
+    radius = {'switch': 5.5, 'dimmer': 5.5, 'smoke': 9.5, 'co_smoke': 9.5}
     removed = {'symbol parts': 0, 'text strokes': 0, 'loose glyphs': 0, 'removed pens': 0}
     # Containment tests done in bulk with numpy: a plan can have tens of thousands of
     # paths and thousands of symbol hits or words, and a Python double loop over them
@@ -178,6 +186,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         """Cut out the segments of a wire that belong to a symbol (stem, tails, crosshair)."""
         if len(hxy) == 0: return [piece]
         d = np.hypot(piece[:, None, 0] - hxy[None, :, 0], piece[:, None, 1] - hxy[None, :, 1])
+        d[:, [i for i, h in enumerate(hits) if h['cls'] in ('smoke', 'co_smoke')]] = 1e9   # wires pass by detectors untouched
         idx = d.argmin(axis=1); near = d[np.arange(len(piece)), idx] <= STEM_R
         seg = np.hypot(*np.diff(piece, axis=0).T)
         # both ends at the same symbol; the bits of a curved wire that swing past a symbol are short: keep them
@@ -202,6 +211,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for k, p in enumerate(pl):
         rl = role(p); r = p['rect']
         if rl == 'remove': removed['removed pens'] += 1; continue
+        if in_hit[k] and is_filled(p) and max(r.width, r.height) < 25:
+            removed['symbol parts'] += 1; continue           # a filled symbol (smoke detector dot), whatever its pen
         if rl in ('electrical', 'misc', 'opening'):
             # long single strokes are wiring that just touches the symbol: keep them
             if in_hit[k] and not (rl == 'electrical' and len(p['items']) == 1 and max(r.width, r.height) > 7):
@@ -237,7 +248,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # 5b. wiring: join the builder's dashes back together and redraw each wire as one clean
     #     arc (or line) that runs from the centre of one symbol to the centre of the other
     removed.setdefault('stray letters', 0)
-    ATTACH = 20.0
+    ATTACH = 25.0
     def dash_dot(seq):
         """Wires are drawn dash-dot (long and short pieces); cabinet and soffit lines are even dashes."""
         if len(seq) < 3: return False
@@ -249,10 +260,24 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for q in wire_pieces:
         if plen(q) > SOLID: res.lines.append(('wiring', [tx(*v) for v in q], False))
     wire_pieces = [q for q in wire_pieces if plen(q) <= SOLID]
+    NO_WIRES = ('smoke', 'co_smoke')                        # smoke / CO detectors never have wires
+    wire_ok = np.array([h['cls'] not in NO_WIRES for h in hits], bool)
+    def wire_hit(pt):
+        """The symbol a wire end belongs to: a symbol within reach, or a fan whose builder note the wire runs to."""
+        if len(hxy):
+            d = np.hypot(hxy[:, 0] - pt[0], hxy[:, 1] - pt[1]); d[~wire_ok] = 1e9
+            i = int(d.argmin())
+            if d[i] <= ATTACH: return i
+        for i, h in enumerate(hits):
+            for b in h.get('note_boxes', ()):
+                if b[0] - 12 <= pt[0] <= b[2] + 12 and b[1] - 12 <= pt[1] <= b[3] + 12: return i
+        return -1
+    def to_note(i, pt):
+        return i >= 0 and math.hypot(hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]) > ATTACH
     for seq in wiring.chain(wire_pieces, gap=16.0):
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
         length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
-        ia, ib = near_hit(P[0], ATTACH), near_hit(P[-1], ATTACH)
+        ia, ib = wire_hit(P[0]), wire_hit(P[-1])
         if float((P.max(axis=0) - P.min(axis=0)).max()) < 8 and near_hit(P.mean(axis=0), 28) >= 0:
             removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
         if len(seq) == 1:
@@ -277,8 +302,11 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             f = wiring.arc_through(tuple(A), tuple(P[k]), tuple(B)) if abs(off[k]) > 0.02 * L else ('line', tuple(A), tuple(B))
             curve = wiring.arc_points(*f[1:]) if f[0] == 'arc' else np.linspace(f[1], f[2], 40)
             # every point of the builder's wire must lie close to the new curve
-            dev = max(float(np.hypot(curve[:, 0] - x, curve[:, 1] - y).min()) for x, y in P[::max(1, len(P) // 40)])
-            return f if dev <= max(4.0, 0.12 * L) else None
+            # (the ends may bend in to the symbol centre, so only the middle of the run is checked)
+            n = len(P); mid = P[int(n * 0.15):max(int(n * 0.85), int(n * 0.15) + 1)]
+            dev = max(float(np.hypot(curve[:, 0] - x, curve[:, 1] - y).min()) for x, y in mid[::max(1, len(mid) // 40)])
+            return f if (dev <= max(5.0, 0.15 * L) or forced) else None
+        forced = to_note(ia, P[0]) or to_note(ib, P[-1])
         hA = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else None
         hB = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else None
         f = None

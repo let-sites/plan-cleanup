@@ -66,8 +66,14 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
     if have:
         imp = Importer(library_doc, out); imp.import_blocks(have); imp.finalize()
     for b in out.blocks:
+        imported = b.name in have
         for e in b:
             if not e.dxf.hasattr('layer') or not e.dxf.layer: e.dxf.layer = '0'
+            if imported:
+                # the block takes the look of the layer it is placed on ($Standard), like a block made on layer 0
+                e.dxf.layer = '0'
+                if e.dxf.is_supported('color'): e.dxf.color = 0      # BYBLOCK
+                if e.dxf.is_supported('true_color') and e.dxf.hasattr('true_color'): e.dxf.discard('true_color')
             if e.dxf.hasattr('style') and e.dxf.style not in out.styles: e.dxf.style = 'Standard'
     _placeholders(out)
     msp = out.modelspace()
@@ -96,7 +102,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_room, 'color': 7,
                                                            'insert': (t.x, t.y), 'attachment_point': 5})
         else:
-            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_note,
+            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_note, 'color': 7,
                                                            'insert': (t.x, t.y), 'attachment_point': 5})
         if t.review:
             msp.add_circle((t.x, t.y), 14, dxfattribs={'layer': 'REVIEW'})

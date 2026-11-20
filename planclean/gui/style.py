@@ -27,6 +27,9 @@ QPushButton[kind="big"] {{ padding: 9px 18px; font-weight: 600; }}
 QComboBox, QLineEdit, QDoubleSpinBox {{ background: white; border: 1px solid {LINE}; border-radius: 6px; padding: 6px 8px; min-height: 20px; }}
 QListWidget, QTableWidget {{ background: white; border: 1px solid {LINE}; border-radius: 8px; }}
 QListWidget::item:selected {{ background: #e3f1f8; color: {INK}; }}
+QListWidget#sheets {{ background: {BG}; border: none; }}
+QListWidget#sheets::item {{ background: white; border: 1px solid {LINE}; border-radius: 8px; padding: 6px; margin: 2px; }}
+QListWidget#sheets::item:selected {{ background: #e3f1f8; border: 2px solid {ACCENT}; }}
 QStatusBar {{ background: white; color: {MUTED}; border-top: 1px solid {LINE}; }}
 QLabel[kind="muted"] {{ color: {MUTED}; }}
 QProgressDialog {{ background: white; }}

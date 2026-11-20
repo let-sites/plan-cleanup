@@ -63,6 +63,25 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
     faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening', 'casework') and not is_filled(p)
                           and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
+    anyline = sample_lines([p for p in pl if role(p) not in ('electrical', 'remove')
+                            and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
+    def facing(x, y, reach=18.0):
+        """Distance to the wall a symbol sits on and the unit direction pointing away from it (page coords).
+        Walls are found straight up, down, left or right, so symbols always sit square to them."""
+        best = None
+        if len(anyline):
+            rel = anyline - (x, y)
+            for dx_, dy_ in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                along = rel[:, 0] * dx_ + rel[:, 1] * dy_; perp = np.abs(rel[:, 0] * dy_ - rel[:, 1] * dx_)
+                m = (along > 0.3) & (along < reach) & (perp < 1.5)
+                if m.any():
+                    dd = float(along[m].min())
+                    if best is None or dd < best[0]: best = (dd, (-dx_, -dy_))
+        if best: return best
+        d, wp = nearest(faces, x, y)
+        ux, uy = x - wp[0], y - wp[1]
+        ux, uy = (math.copysign(1, ux), 0) if abs(ux) >= abs(uy) else (0, math.copysign(1, uy))
+        return d, (ux, uy)
     def nearest(pts, x, y):
         if len(pts) == 0: return 1e9, (x, y + 1)
         d = np.hypot(pts[:, 0] - x, pts[:, 1] - y); i = int(d.argmin()); return float(d[i]), pts[i]
@@ -104,6 +123,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if m and w['size'] >= profile.room_text_min_size:
             w['room'] = profile.room_names[m[0]]; rooms.append(w)
         else:
+            # short labels next to a symbol (WP, GFI, GF, 220, Q, 3(T)...) describe the builder's symbol: drop them
+            short = len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 5
+            if short and any(math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < 26 for h in hits):
+                res.dropped_labels.append(n); continue
             notes.append(w)
     notes = ocr.stack_lines(notes)
 
@@ -187,41 +210,39 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         for q in polylines(p):
             res.lines.append((out_role, [tx(*v) for v in q], is_filled(p) and len(q) > 2))
 
-    # 5b. wiring: join the builder's dashes back into solid lines and arcs
+    # 5b. wiring: join the builder's dashes back together and redraw each wire as one clean
+    #     arc (or line) that runs from the centre of one symbol to the centre of the other
     removed['stray letters'] = 0
-    stem_pts = np.array([s_[0] for s_ in stems], float).reshape(-1, 2)
-    for seq in wiring.chain(wire_pieces):
+    ATTACH = 20.0
+    for seq in wiring.chain(wire_pieces, gap=10.0):
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
-        length = sum(float(np.sum(np.hypot(*np.diff(q, axis=0).T))) for q in seq)
-        if len(seq) == 1 and length < 8 and near_hit(P.mean(axis=0), 20) >= 0:
+        length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
+        ia, ib = near_hit(P[0], ATTACH), near_hit(P[-1], ATTACH)
+        if len(seq) == 1 and length < 8 and near_hit(P.mean(axis=0), 20) >= 0 and (ia < 0 or ia == ib):
             removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
-        D = np.array([tx(*v) for v in P])
-        f = wiring.fit(D) if len(seq) > 1 else ('poly', D)
-        if f[0] == 'arc' and len(seq) > 1:
-            res.arcs.append(('wiring',) + tuple(float(v) for v in f[1:]))
-        else:   # straight or cornered runs keep the builder's own strokes
-            for q in seq: res.lines.append(('wiring', [tx(*v) for v in q], False))
-        # a wire that ended at a removed stem now runs into the symbol
-        for end in (P[0], P[-1]):
-            if len(stem_pts) == 0: break
-            d = np.hypot(stem_pts[:, 0] - end[0], stem_pts[:, 1] - end[1]); j = int(d.argmin())
-            if d[j] < 1.5:
-                h = hits[stems[j][1]]; v = np.array([h['x'], h['y']]) - end; L = float(np.hypot(*v))
-                if L > 4: res.lines.append(('wiring', [tx(*end), tx(*(end + v * (L - 3.5) / L))], False))
-
-    res.arcs = wiring.merge_arcs(res.arcs, gap=10.0 * K)
-    res.arcs = wiring.extend_to_symbols(res.arcs, np.array([tx(h['x'], h['y']) for h in hits], float).reshape(-1, 2),
-                                        reach=25.0 * K, stop=5.0 * K)
+        if len(seq) == 1:
+            res.lines.append(('wiring', [tx(*v) for v in P], False)); continue   # a solid stroke, not a dashed wire: leave it
+        A = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else P[0]
+        B = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else P[-1]
+        if ia >= 0 and ia == ib:
+            continue                                         # both ends at one symbol: part of it
+        # the point of the wire furthest from the straight line A-B sets how much it bows
+        AB = B - A; L = float(np.hypot(*AB))
+        if L < 1: continue
+        nrm = np.array([-AB[1], AB[0]]) / L
+        off = (P - A) @ nrm; k = int(np.abs(off).argmax())
+        f = wiring.arc_through(tx(*A), tx(*P[k]), tx(*B)) if abs(off[k]) > 0.02 * L else ('line', tx(*A), tx(*B))
+        if f[0] == 'arc': res.arcs.append(('wiring',) + tuple(float(v) for v in f[1:]))
+        else: res.lines.append(('wiring', [f[1], f[2]], False))
 
     # 6. symbols in drawing units, facing into the room
     for h in hits:
         X, Y = tx(h['x'], h['y'])
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']))
-        d, wp = nearest(faces, h['x'], h['y'])
-        ux, uy = h['x'] - wp[0], h['y'] - wp[1]; L = math.hypot(ux, uy) or 1
-        s.dx, s.dy = ux / L, -uy / L
+        d, (ux, uy) = facing(h['x'], h['y'])
+        s.dx, s.dy = ux, -uy
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"
-        if not s.review and s.cls in ORIENTED and d > 14: s.review = 'No wall nearby to face'
+        if not s.review and s.cls in ORIENTED and d > 18: s.review = 'No wall nearby to face'
         res.symbols.append(s)
     for w in rooms:
         X, Y = tx(w['cx'], w['cy']); res.texts.append(Text('room', [w['room']], X, Y))

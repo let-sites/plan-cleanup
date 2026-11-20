@@ -128,7 +128,7 @@ class StartDialog(QDialog):
             blank = QPixmap(THUMB, int(THUMB * 0.65)); blank.fill(Qt.white)
             for i in range(len(self.doc)):
                 it = QListWidgetItem(QIcon(blank), f'Page {i + 1}'); it.setSizeHint(QSize(THUMB + 20, int(THUMB * 0.72) + 34)); self.sheets.addItem(it)
-            self._thumb_queue = list(range(len(self.doc))); self._timer.start(0)
+            self._thumb_queue = []
         self.update_state()
 
     def _next_thumb(self):
@@ -146,11 +146,9 @@ class StartDialog(QDialog):
     def update_state(self, *_):
         if not hasattr(self, 'start'): return
         self.next.setEnabled(bool(self.path and self.builder_name()))
-        self.next.setText('Next' if (self.is_pdf() or not self.path) else 'Open')
+        self.next.setText('Open')
         self.start.setEnabled(self.sheets.currentRow() >= 0)
         self.sheet_index = max(self.sheets.currentRow(), 0)
 
     def go_next(self):
-        if not self.is_pdf(): self.accept(); return
-        self.p2_title.setText(f'Which sheet in {Path(self.path).name}?')
-        self.stack.setCurrentIndex(1)
+        self.accept()      # the sheet is picked in the main window's sheet list

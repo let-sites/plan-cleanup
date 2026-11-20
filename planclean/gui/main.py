@@ -3,12 +3,12 @@ from __future__ import annotations
 import os, sys, math, traceback, tempfile
 from pathlib import Path
 import pymupdf
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QPointF, QRectF, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QPointF, QRectF, QTimer, QSize
 from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy)
+    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView)
 
 from planclean import __version__
 from planclean.profile import Profile, Settings, safe_name
@@ -23,6 +23,7 @@ from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
 from .start import StartDialog, _big
+THUMB_W = 200
 
 SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
 
@@ -112,6 +113,19 @@ class MainWindow(QMainWindow):
         self.info.setText('&nbsp;&nbsp;&nbsp;'.join(parts))
 
     def _docks(self):
+        self.pages = QListWidget(); self.pages.setObjectName('sheets')
+        self.pages.setViewMode(QListView.IconMode); self.pages.setFlow(QListView.TopToBottom); self.pages.setWrapping(False)
+        self.pages.setMovement(QListView.Static); self.pages.setResizeMode(QListView.Adjust)
+        self.pages.setIconSize(QSize(THUMB_W, THUMB_W)); self.pages.setSpacing(6); self.pages.setUniformItemSizes(True)
+        self.pages.setFixedWidth(THUMB_W + 44)
+        self.pages.currentRowChanged.connect(self.on_page)
+        side = QWidget(); sv = QVBoxLayout(side); sv.setContentsMargins(10, 10, 6, 10)
+        hdr = QLabel('<b>Sheets</b>'); hdr.setStyleSheet('font-size:15px'); sv.addWidget(hdr)
+        tip = QLabel('Use ↑ ↓ to flip through'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
+        sv.addWidget(self.pages, 1)
+        d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        self.addDockWidget(Qt.LeftDockWidgetArea, d); self.sheet_dock = d
+        self._thumb_queue = []; self._thumb_timer = QTimer(self); self._thumb_timer.timeout.connect(self._next_thumb)
         self.tabs = QTabWidget(); self.tabs.setMinimumWidth(430); self.tabs.tabBar().hide()
         self.tabs.addTab(self._tab_area(), 'Plan area')
         self.tabs.addTab(self._tab_setup(), 'Builder setup')
@@ -220,8 +234,19 @@ class MainWindow(QMainWindow):
         self.set_builder(d.builder_name())
         self.load(d.path, d.sheet_index)
 
+    def _next_thumb(self):
+        if not self._thumb_queue: self._thumb_timer.stop(); return
+        i = self._thumb_queue.pop(0)
+        if i >= len(self.sheets) or self.sheets[i].kind != 'pdf': return
+        page = self.sheets[i].page; z = THUMB_W / max(page.rect.width, page.rect.height)
+        pm = page.get_pixmap(matrix=pymupdf.Matrix(z, z), alpha=False)
+        img = QImage(pm.samples, pm.width, pm.height, pm.stride, QImage.Format_RGB888).copy()
+        it = self.pages.item(i)
+        if it: it.setIcon(QIcon(QPixmap.fromImage(img)))
+
     def load(self, f, index=0):
         self.result = None; self.region = None; self.sheets = []; self.sheet = None
+        self.pages.blockSignals(True); self.pages.clear(); self._thumb_queue = []
         ext = Path(f).suffix.lower()
         if ext == '.pdf':
             doc = pymupdf.open(f)
@@ -234,14 +259,19 @@ class MainWindow(QMainWindow):
             self.sheets.append(DwgSheet(self.dwg_doc, Path(f).name))
         self.file_name = Path(f).name
         self.setWindowTitle(f'Plan Cleanup {__version__} — {Path(f).name}')
-        self.on_page(min(index, len(self.sheets) - 1))
+        blank = QPixmap(THUMB_W, int(THUMB_W * 0.65)); blank.fill(Qt.white)
+        for sh in self.sheets:
+            it = QListWidgetItem(QIcon(blank), sh.title); it.setSizeHint(QSize(THUMB_W + 16, int(THUMB_W * 0.65) + 34)); self.pages.addItem(it)
+        self._thumb_queue = list(range(len(self.sheets))); self._thumb_timer.start(0)
+        self.pages.blockSignals(False)
+        self.pages.setCurrentRow(min(index, len(self.sheets) - 1)); self.pages.setFocus()
 
     def on_page(self, i):
         if i < 0 or i >= len(self.sheets): return
         self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None
         self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
         self.area_lbl.setText(''); self.clean_btn.setEnabled(False); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
-        self.statusBar().showMessage('Drag a box around the floor plan.')
+        self.statusBar().showMessage('Find the electrical sheet (↑ ↓), then drag a box around the floor plan.')
 
     def on_region(self, rect: QRectF):
         self.region = self.sheet.region_from_view(rect); self.view.set_mode('pan'); self.teacher = None
@@ -423,6 +453,13 @@ class MainWindow(QMainWindow):
             polys = [[self._view_pt(*p) for p in pts] for pts in shapes.placed(s, self.settings.block_for(s.cls))]
             col = '#d00000' if s.review else '#000000'
             it = self.view.add_paths(polys, col, 0); it.setZValue(8); it.setData(0, s)
+            for tx_, ty_, th, trot, ttxt in shapes.placed_texts(s, self.settings.block_for(s.cls)):
+                # text insert is its baseline-left corner; draw it the same way
+                vx, vy = self._view_pt(tx_, ty_); f = QFont('Arial'); f.setPixelSize(max(2, int(round(th * self.view_px_per_inch() * 1.35))))
+                ti = self.view.scene_.addSimpleText(ttxt, f); ti.setBrush(QColor(col))
+                asc = ti.boundingRect().height() * 0.78
+                ti.setTransformOriginPoint(0, asc); ti.setPos(vx, vy - asc); ti.setRotation(-trot)
+                ti.setZValue(8); ti.setData(0, s); self.view.overlay.append(ti)
             # an invisible, clickable area over the symbol; review items get a red ring
             hit = self.view.add_marker(x, y, '#d00000' if s.review else '#00000000', payload=s, ring=bool(s.review), r=11)
             hit.setBrush(QColor(0, 0, 0, 1))

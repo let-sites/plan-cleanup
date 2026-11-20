@@ -160,3 +160,21 @@ def extend_to_symbols(arcs, sym_xy, reach, stop):
         if e0 and min(e0) > gap and span + min(e0) < 340: a0 = (a0 - min(e0) + gap) % 360
         out.append((role, cx, cy, r, a0, a1))
     return out
+
+
+def arc_through(a, m, b):
+    """Arc from a to b passing through m: ('arc', cx, cy, r, a0, a1) counter-clockwise, or ('line', a, b)."""
+    (x1, y1), (x2, y2), (x3, y3) = a, m, b
+    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    chord = math.hypot(x3 - x1, y3 - y1)
+    if abs(d) < 1e-9: return ('line', tuple(a), tuple(b))
+    ux = ((x1 * x1 + y1 * y1) * (y2 - y3) + (x2 * x2 + y2 * y2) * (y3 - y1) + (x3 * x3 + y3 * y3) * (y1 - y2)) / d
+    uy = ((x1 * x1 + y1 * y1) * (x3 - x2) + (x2 * x2 + y2 * y2) * (x1 - x3) + (x3 * x3 + y3 * y3) * (x2 - x1)) / d
+    r = math.hypot(x1 - ux, y1 - uy)
+    # nearly straight: the bulge is tiny compared with the length
+    sag = abs((x3 - x1) * (y1 - y2) - (x1 - x2) * (y3 - y1)) / max(chord, 1e-9)
+    if r > 40 * max(chord, 1e-9) or sag < 0.012 * chord: return ('line', tuple(a), tuple(b))
+    t1, t2, t3 = (math.degrees(math.atan2(y - uy, x - ux)) % 360 for x, y in (a, m, b))
+    if (t2 - t1) % 360 <= (t3 - t1) % 360:
+        return ('arc', ux, uy, r, t1, t3)       # a -> m -> b is counter-clockwise
+    return ('arc', ux, uy, r, t3, t1)

@@ -98,10 +98,10 @@ class MainWindow(QMainWindow):
 
     # ---------- layout
     def _toolbar(self):
-        tb = QToolBar('Main'); tb.setMovable(False); tb.setStyleSheet('QToolBar{padding:6px;spacing:8px}'); self.addToolBar(tb)
+        tb = QToolBar('Main'); tb.setMovable(False); self.addToolBar(tb)
         b = _big('New cleanup…', primary=True); b.clicked.connect(self.new_cleanup); tb.addWidget(b)
         QAction_ = QAction('New', self); QAction_.setShortcut(QKeySequence.New); QAction_.triggered.connect(self.new_cleanup); self.addAction(QAction_)
-        self.info = QLabel(''); self.info.setStyleSheet('font-size:13px;color:#333;padding-left:12px'); tb.addWidget(self.info)
+        self.info = QLabel(''); self.info.setStyleSheet('font-size:14px;padding-left:12px'); tb.addWidget(self.info)
         spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); tb.addWidget(spacer)
         b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
 
@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, d)
 
     def _step(self, n, title, text):
-        l = QLabel(f'<div style="font-size:12px;color:#0a7cff;font-weight:600">STEP {n} OF 3</div>'
+        l = QLabel(f'<div style="font-size:12px;color:#4a90b8;font-weight:700;letter-spacing:1px">STEP {n} OF 3</div>'
                    f'<div style="font-size:18px;font-weight:700;margin:2px 0 6px 0">{title}</div>'
                    f'<div style="color:#444">{text}</div>')
         l.setWordWrap(True); return l
@@ -129,10 +129,17 @@ class MainWindow(QMainWindow):
         w = QWidget(); v = QVBoxLayout(w)
         v.addWidget(self._step(1, 'Draw a box around the plan',
                                'Drag a box around the floor plan you want to clean. Leave out the legend, notes, '
-                               'title block and option plans. Cleaning starts as soon as you let go.<br><br>'
+                               'title block and option plans. Not right? Just drag a new box.<br><br>'
                                'Pinch or use the mouse wheel to zoom. Scroll with two fingers, hold the space bar, or use the middle mouse button to move around.'))
-        b = _big('Draw the box again'); b.clicked.connect(lambda: self.view.set_mode('box')); v.addWidget(b)
-        self.area_lbl = QLabel(''); self.area_lbl.setWordWrap(True); v.addWidget(self.area_lbl); v.addStretch(); return w
+        self.area_lbl = QLabel(''); self.area_lbl.setWordWrap(True); v.addWidget(self.area_lbl)
+        self.clean_btn = _big('Clean up this plan', primary=True); self.clean_btn.setEnabled(False)
+        self.clean_btn.clicked.connect(self.clean_clicked); v.addWidget(self.clean_btn)
+        v.addStretch(); return w
+
+    def clean_clicked(self):
+        if self.profile is not None and not (self.profile.symbols or self.profile.dwg_block_map):
+            self.tabs.setCurrentIndex(1); return           # new builder: teach symbols first
+        self.run_clean()
 
     def _tab_setup(self):
         w = QWidget(); v = QVBoxLayout(w)
@@ -181,9 +188,10 @@ class MainWindow(QMainWindow):
 
     def redraw_box(self):
         self.result = None; self.view.clear_overlay(); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
+        self.clean_btn.setEnabled(self.region is not None)
 
     def _help(self, text):
-        l = QLabel(text); l.setWordWrap(True); l.setStyleSheet('color:#444;background:#f4f6f8;padding:8px;border-radius:4px'); return l
+        l = QLabel(text); l.setWordWrap(True); l.setStyleSheet('color:#4b5a66;background:#f1f6f9;padding:10px;border-radius:6px'); return l
 
     # ---------- builders
     def set_builder(self, name):
@@ -232,7 +240,7 @@ class MainWindow(QMainWindow):
         if i < 0 or i >= len(self.sheets): return
         self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None
         self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
-        self.area_lbl.setText(''); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
+        self.area_lbl.setText(''); self.clean_btn.setEnabled(False); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
         self.statusBar().showMessage('Drag a box around the floor plan.')
 
     def on_region(self, rect: QRectF):
@@ -244,10 +252,10 @@ class MainWindow(QMainWindow):
         self.fill_setup()
         if self.profile is None:
             QMessageBox.information(self, 'Builder', 'Choose a builder with New cleanup first.'); return
-        if not (self.profile.symbols or self.profile.dwg_block_map):
-            self.tabs.setCurrentIndex(1)       # new builder: teach symbols first
-        else:
-            self.run_clean()                   # known builder: clean straight away
+        self.view.set_mode('box')              # dragging again replaces the box
+        self.clean_btn.setEnabled(True)
+        self.area_lbl.setText('Box drawn. Click <b>Clean up this plan</b>, or drag a new box if it\'s not right.')
+        self.statusBar().showMessage('Box drawn. Click Clean up this plan.')
 
     # ---------- setup tab
     def fill_setup(self):
@@ -403,6 +411,9 @@ class MainWindow(QMainWindow):
         polys = {}
         for role, pts, f in self.result.lines:
             polys.setdefault(role, []).append([self._view_pt(*p) for p in pts])
+        from planclean.wiring import arc_points
+        for role, cx, cy, r, a0, a1 in self.result.arcs:
+            polys.setdefault(role, []).append([self._view_pt(*p) for p in arc_points(cx, cy, r, a0, a1)])
         for role, ps in polys.items():
             self.view.add_paths(ps, {'wall': '#111', 'wiring': '#555'}.get(role, '#888'), 1.5 if role == 'wall' else 0)
         shapes = self.block_shapes()
@@ -445,16 +456,28 @@ class MainWindow(QMainWindow):
         self._sel = None
 
     def on_review_item(self, it):
-        self.on_pick(it.data(Qt.UserRole))
+        self.on_pick(it.data(Qt.UserRole), zoom=True)
 
-    def on_pick(self, obj):
+    def highlight(self, x, y, zoom=True):
+        """Draw a box around the item being looked at and zoom to it."""
+        old = getattr(self, '_hl', None)
+        if old is not None and old.scene() is not None: self.view.scene_.removeItem(old)
+        r = 22 * max(1.0, self.view_px_per_inch() * 8 / 22)
+        from PySide6.QtGui import QPen, QBrush
+        self._hl = self.view.scene_.addRect(QRectF(x - r, y - r, 2 * r, 2 * r), QPen(QColor('#4a90b8'), 0), QBrush(QColor(142, 197, 222, 90)))
+        self._hl.setPen(QPen(QColor('#4a90b8'), 3)); self._hl.pen().setCosmetic(True)
+        p = self._hl.pen(); p.setCosmetic(True); self._hl.setPen(p)
+        self._hl.setZValue(20); self.view.overlay.append(self._hl)
+        if zoom: self.view.fitInView(QRectF(x - 8 * r, y - 5 * r, 16 * r, 10 * r), Qt.KeepAspectRatio)
+
+    def on_pick(self, obj, zoom=False):
         self._sel = obj
         if hasattr(obj, 'cls'):
             self.edit_type.setCurrentIndex(list(SYMBOL_TYPES).index(obj.cls))
-            x, y = self._view_pt(obj.x, obj.y); self.view.centerOn(x, y)
+            x, y = self._view_pt(obj.x, obj.y); self.highlight(x, y, zoom)
             self.statusBar().showMessage(f'Selected: {sym_label(obj.cls)} (match {obj.score:.2f}) {" ".join(obj.mods)}')
         else:
-            x, y = self._view_pt(obj.x, obj.y); self.view.centerOn(x, y)
+            x, y = self._view_pt(obj.x, obj.y); self.highlight(x, y, zoom)
             txt, ok = QInputDialog.getText(self, 'Edit text', 'Text (use / for a new line):', text=' / '.join(obj.lines))
             if ok:
                 obj.lines = [l.strip() for l in txt.split('/') if l.strip()]; obj.review = ''
@@ -531,6 +554,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv); app.setApplicationName('Plan Cleanup')
+    from . import style; style.apply(app)
     w = MainWindow(); w.show()
     if len(sys.argv) > 1: w.load(sys.argv[1])
     else: QTimer.singleShot(200, w.new_cleanup)    # start with the New cleanup window

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import difflib, math, re
 import numpy as np
-from . import detect, ocr
+from . import wiring, detect, ocr
 from .vec import polylines, pen_key, in_region, sample_lines, is_filled
 from .profile import Profile, NOTE_WORDS
 from .result import Result, Sym, Text
@@ -61,7 +61,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 3. walls (for turning symbols and telling wall lights from ceiling lights)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
-    faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening') and not is_filled(p)
+    faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening', 'casework') and not is_filled(p)
                           and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
     def nearest(pts, x, y):
         if len(pts) == 0: return 1e9, (x, y + 1)
@@ -132,6 +132,33 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         pad = 4.0 if id(w) in room_ids else 0.8; b = w['bb']
         word_boxes.append((b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
     in_hit, in_word = contained(hit_boxes), contained(word_boxes)
+    hxy = np.array([[h['x'], h['y']] for h in hits], float).reshape(-1, 2)
+    def near_hit(pt, r):
+        if len(hxy) == 0: return -1
+        d = np.hypot(hxy[:, 0] - pt[0], hxy[:, 1] - pt[1]); i = int(d.argmin())
+        return i if d[i] <= r else -1
+    STEM_R = 15.0
+    stems = []                       # (end point the wiring may attach to, hit index)
+    def trim(piece):
+        """Cut out the segments of a wire that belong to a symbol (stem, tails, crosshair)."""
+        if len(hxy) == 0: return [piece]
+        d = np.hypot(piece[:, None, 0] - hxy[None, :, 0], piece[:, None, 1] - hxy[None, :, 1])
+        idx = d.argmin(axis=1); near = d[np.arange(len(piece)), idx] <= STEM_R
+        drop = near[:-1] & near[1:] & (idx[:-1] == idx[1:])          # both ends at the same symbol
+        if not drop.any(): return [piece]
+        out, cur = [], [piece[0]]
+        for i, dr in enumerate(drop):
+            if dr:
+                if len(cur) > 1: out.append(np.array(cur)); stems.append((tuple(cur[-1]), int(idx[i])))
+                elif i > 0 and not drop[i - 1]: pass
+                cur = [piece[i + 1]]
+                if i + 1 < len(drop) and not drop[i + 1]: stems.append((tuple(piece[i + 1]), int(idx[i])))
+            else:
+                cur.append(piece[i + 1])
+        if len(cur) > 1: out.append(np.array(cur))
+        removed['symbol parts'] += int(drop.sum())
+        return out
+    wire_pieces = []                 # connected polylines of the kept electrical paths
     for k, p in enumerate(pl):
         rl = role(p); r = p['rect']
         if rl == 'remove': removed['removed pens'] += 1; continue
@@ -139,14 +166,52 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             # long single strokes are wiring that just touches the symbol: keep them
             if in_hit[k] and not (rl == 'electrical' and len(p['items']) == 1 and max(r.width, r.height) > 7):
                 removed['symbol parts'] += 1; continue
+            # a short straight stroke with both ends at one symbol is part of it
+            # (a switch's stem, a light's crosshair, an outlet's tails)
+            if len(p['items']) == 1 and p['items'][0][0] == 'l' and len(hxy):
+                a, b = p['items'][0][1], p['items'][0][2]
+                ia, ib = near_hit((a.x, a.y), STEM_R), near_hit((b.x, b.y), STEM_R)
+                if ia >= 0 and ia == ib:
+                    h = hits[ia]
+                    far = (a.x, a.y) if math.hypot(a.x - h['x'], a.y - h['y']) >= math.hypot(b.x - h['x'], b.y - h['y']) else (b.x, b.y)
+                    stems.append((far, ia)); removed['symbol parts'] += 1; continue
         if rl == 'electrical':
             if in_word[k]:
                 removed['text strokes'] += 1; continue
             if len(p['items']) >= 2 and max(r.width, r.height) < 9 and not any(i[0] == 'c' for i in p['items']):
                 removed['loose glyphs'] += 1; continue
-        out_role = {'electrical': 'wiring'}.get(rl, rl)
+        if rl == 'electrical':
+            for q in wiring.pieces_of(polylines(p)): wire_pieces += trim(q)
+            continue
+        out_role = rl
         for q in polylines(p):
             res.lines.append((out_role, [tx(*v) for v in q], is_filled(p) and len(q) > 2))
+
+    # 5b. wiring: join the builder's dashes back into solid lines and arcs
+    removed['stray letters'] = 0
+    stem_pts = np.array([s_[0] for s_ in stems], float).reshape(-1, 2)
+    for seq in wiring.chain(wire_pieces):
+        P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
+        length = sum(float(np.sum(np.hypot(*np.diff(q, axis=0).T))) for q in seq)
+        if len(seq) == 1 and length < 8 and near_hit(P.mean(axis=0), 20) >= 0:
+            removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
+        D = np.array([tx(*v) for v in P])
+        f = wiring.fit(D) if len(seq) > 1 else ('poly', D)
+        if f[0] == 'arc' and len(seq) > 1:
+            res.arcs.append(('wiring',) + tuple(float(v) for v in f[1:]))
+        else:   # straight or cornered runs keep the builder's own strokes
+            for q in seq: res.lines.append(('wiring', [tx(*v) for v in q], False))
+        # a wire that ended at a removed stem now runs into the symbol
+        for end in (P[0], P[-1]):
+            if len(stem_pts) == 0: break
+            d = np.hypot(stem_pts[:, 0] - end[0], stem_pts[:, 1] - end[1]); j = int(d.argmin())
+            if d[j] < 1.5:
+                h = hits[stems[j][1]]; v = np.array([h['x'], h['y']]) - end; L = float(np.hypot(*v))
+                if L > 4: res.lines.append(('wiring', [tx(*end), tx(*(end + v * (L - 3.5) / L))], False))
+
+    res.arcs = wiring.merge_arcs(res.arcs, gap=10.0 * K)
+    res.arcs = wiring.extend_to_symbols(res.arcs, np.array([tx(h['x'], h['y']) for h in hits], float).reshape(-1, 2),
+                                        reach=25.0 * K, stop=5.0 * K)
 
     # 6. symbols in drawing units, facing into the room
     for h in hits:

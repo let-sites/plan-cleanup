@@ -26,6 +26,7 @@ class Text:
 @dataclass
 class Result:
     lines: list = field(default_factory=list)    # (role, [(x,y),...], filled)
+    arcs: list = field(default_factory=list)     # (role, cx, cy, r, start_deg, end_deg), counter-clockwise
     symbols: list = field(default_factory=list)
     texts: list = field(default_factory=list)
     stats: dict = field(default_factory=dict)

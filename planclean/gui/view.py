@@ -72,7 +72,7 @@ class SheetView(QGraphicsView):
             self._start_pan(e.position()); return
         if self.mode == 'box' and e.button() == Qt.LeftButton:
             self._start = p
-            self._band = self.scene_.addRect(QRectF(p, p), QPen(QColor('#0a7cff'), 0, Qt.DashLine), QBrush(QColor(10, 124, 255, 30)))
+            self._band = self.scene_.addRect(QRectF(p, p), QPen(QColor('#4a90b8'), 0, Qt.DashLine), QBrush(QColor(74, 144, 184, 35)))
             return
         if self.mode == 'teach' and e.button() == Qt.LeftButton:
             self.clicked.emit(p); return
@@ -103,7 +103,7 @@ class SheetView(QGraphicsView):
 
     def show_region(self, r):
         if self.region_item is not None: self.scene_.removeItem(self.region_item)
-        self.region_item = self.scene_.addRect(r, QPen(QColor('#0a7cff'), 0), QBrush(Qt.NoBrush))
+        self.region_item = self.scene_.addRect(r, QPen(QColor('#4a90b8'), 0), QBrush(Qt.NoBrush))
         self.region_item.setZValue(5)
 
     def clear_overlay(self):

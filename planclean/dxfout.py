@@ -78,6 +78,8 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             msp.add_lwpolyline(pts, dxfattribs={'layer': lay})
             if filled:
                 h = msp.add_hatch(color=7, dxfattribs={'layer': lay}); h.paths.add_polyline_path(pts, is_closed=True)
+    for role, cx, cy, r, a0, a1 in getattr(res, 'arcs', []):
+        msp.add_arc((cx, cy), r, a0, a1, dxfattribs={'layer': ROLE_LAYER.get(role, 'BASE-MISC')})
     missing = set()
     for s in res.symbols:
         if s.cls == 'remove': continue

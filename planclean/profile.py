@@ -87,21 +87,22 @@ class Settings:
     block_library: str = ""        # DWG or DXF that holds your blocks
     block_map: dict = field(default_factory=dict)   # symbol type -> your block name (overrides defaults)
     oda_path: str = ""             # ODA File Converter executable (auto-detected when empty)
-    text_height_room: float = 3.0  # inches
+    text_height_room: float = 5.0  # inches
     text_height_note: float = 3.0
     text_style: str = "Notes"      # Arial
     text_layer: str = "$Circuits"  # room names and kept notes
     symbol_layer: str = "$Standard"
-    settings_version: int = 2
+    settings_version: int = 3
 
     @staticmethod
     def load():
         f = config_dir() / 'settings.json'
         if f.exists():
             d = json.loads(f.read_text())
-            if d.get('settings_version', 1) < 2:
-                # first versions defaulted to 9"/5" text; your standard is 3" Notes on $Circuits
+            if d.get('settings_version', 1) < 3:
+                # earlier versions had other defaults; your standard is 5" Notes (white) on $Circuits
                 d.pop('text_height_room', None); d.pop('text_height_note', None)
+                d['settings_version'] = 3
             return Settings(**{k: v for k, v in d.items() if k in Settings.__dataclass_fields__})
         return Settings(profiles_folder=str(config_dir() / 'profiles'))
 

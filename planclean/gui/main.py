@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySe
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter)
+    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy)
 
 from planclean import __version__
 from planclean.profile import Profile, Settings, safe_name
@@ -22,6 +22,7 @@ from planclean.jobs import CleanJob, attach_to_page
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
+from .start import StartDialog, _big
 
 SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
 
@@ -77,7 +78,7 @@ class SettingsDialog(QDialog):
         if f: ed.setText(f)
     def apply(self):
         s = self.s; s.profiles_folder = self.prof.text(); s.block_library = self.lib.text(); s.oda_path = self.oda.text()
-        s.text_height_room = self.th_room.value(); s.text_height_note = self.th_note.value()
+        s.text_height_room = self.th_room.value(); s.text_height_note = self.th_note.value(); s.settings_version = 3
         s.block_map = {k: cb.currentText() for k, cb in self.combos.items() if cb.currentText() != SYMBOL_TYPES[k][1]}
         s.save()
 
@@ -92,37 +93,52 @@ class MainWindow(QMainWindow):
         self.view.regionDrawn.connect(self.on_region); self.view.clicked.connect(self.on_teach_click); self.view.itemPicked.connect(self.on_pick)
         self._toolbar(); self._docks()
         self.resize(1500, 950)
-        self.statusBar().showMessage('Open a builder PDF or DWG to start.')
+        self.file_name = ''
+        self.statusBar().showMessage('Click New cleanup to start.')
 
     # ---------- layout
     def _toolbar(self):
-        tb = QToolBar('Main'); tb.setMovable(False); self.addToolBar(tb)
-        a = QAction('Open plan…', self); a.setShortcut(QKeySequence.Open); a.triggered.connect(self.open_file); tb.addAction(a)
-        tb.addSeparator(); tb.addWidget(QLabel(' Builder: '))
-        self.builder_cb = QComboBox(); self.builder_cb.setMinimumWidth(220); self.builder_cb.activated.connect(self.on_builder); tb.addWidget(self.builder_cb)
-        self.refresh_builders()
-        tb.addSeparator()
-        a = QAction('Settings…', self); a.triggered.connect(self.open_settings); tb.addAction(a)
+        tb = QToolBar('Main'); tb.setMovable(False); tb.setStyleSheet('QToolBar{padding:6px;spacing:8px}'); self.addToolBar(tb)
+        b = _big('New cleanup…', primary=True); b.clicked.connect(self.new_cleanup); tb.addWidget(b)
+        QAction_ = QAction('New', self); QAction_.setShortcut(QKeySequence.New); QAction_.triggered.connect(self.new_cleanup); self.addAction(QAction_)
+        self.info = QLabel(''); self.info.setStyleSheet('font-size:13px;color:#333;padding-left:12px'); tb.addWidget(self.info)
+        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); tb.addWidget(spacer)
+        b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
+
+    def update_info(self):
+        parts = []
+        if self.profile: parts.append(f'<b>Builder:</b> {self.profile.name}')
+        if self.sheet: parts.append(f'<b>Plan:</b> {self.file_name} · {self.sheet.title}')
+        self.info.setText('&nbsp;&nbsp;&nbsp;'.join(parts))
 
     def _docks(self):
-        self.pages = QListWidget(); self.pages.currentRowChanged.connect(self.on_page)
-        d = QDockWidget('Sheets', self); d.setWidget(self.pages); d.setFeatures(QDockWidget.NoDockWidgetFeatures); self.addDockWidget(Qt.LeftDockWidgetArea, d)
-        self.tabs = QTabWidget(); self.tabs.setMinimumWidth(430)
-        self.tabs.addTab(self._tab_area(), '1  Plan area')
-        self.tabs.addTab(self._tab_setup(), '2  Builder setup')
-        self.tabs.addTab(self._tab_review(), '3  Clean && review')
-        d = QDockWidget('Steps', self); d.setWidget(self.tabs); d.setFeatures(QDockWidget.NoDockWidgetFeatures); self.addDockWidget(Qt.RightDockWidgetArea, d)
+        self.tabs = QTabWidget(); self.tabs.setMinimumWidth(430); self.tabs.tabBar().hide()
+        self.tabs.addTab(self._tab_area(), 'Plan area')
+        self.tabs.addTab(self._tab_setup(), 'Builder setup')
+        self.tabs.addTab(self._tab_review(), 'Review')
+        d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(self.tabs); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        self.addDockWidget(Qt.RightDockWidgetArea, d)
+
+    def _step(self, n, title, text):
+        l = QLabel(f'<div style="font-size:12px;color:#0a7cff;font-weight:600">STEP {n} OF 3</div>'
+                   f'<div style="font-size:18px;font-weight:700;margin:2px 0 6px 0">{title}</div>'
+                   f'<div style="color:#444">{text}</div>')
+        l.setWordWrap(True); return l
 
     def _tab_area(self):
         w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(self._help('Pick the electrical sheet on the left, then draw a box around the one plan you want to clean. '
-                               'Leave out the legend, title block and option plans.'))
-        b = QPushButton('Draw box around the plan'); b.clicked.connect(lambda: self.view.set_mode('box')); v.addWidget(b)
-        b = QPushButton('Pan / zoom (mouse wheel)'); b.clicked.connect(lambda: self.view.set_mode('pan')); v.addWidget(b)
-        self.area_lbl = QLabel('No plan area yet.'); v.addWidget(self.area_lbl); v.addStretch(); return w
+        v.addWidget(self._step(1, 'Draw a box around the plan',
+                               'Drag a box around the floor plan you want to clean. Leave out the legend, notes, '
+                               'title block and option plans. Cleaning starts as soon as you let go.<br><br>'
+                               'Pinch or use the mouse wheel to zoom. Scroll with two fingers, hold the space bar, or use the middle mouse button to move around.'))
+        b = _big('Draw the box again'); b.clicked.connect(lambda: self.view.set_mode('box')); v.addWidget(b)
+        self.area_lbl = QLabel(''); self.area_lbl.setWordWrap(True); v.addWidget(self.area_lbl); v.addStretch(); return w
 
     def _tab_setup(self):
         w = QWidget(); v = QVBoxLayout(w)
+        v.addWidget(self._step(2, 'Teach this builder', 'This builder is new, so show the app what their symbols look like. '
+                               'Click <b>Click a symbol to teach it</b>, click one of each kind of symbol on the plan and say what it is. '
+                               'You only do this once per builder.'))
         v.addWidget(self._help('Do this once per builder. Tell the tool what each line type is, then click one example of each '
                                'symbol and choose what it is. Save when done; later plans from this builder skip this step.'))
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
@@ -138,47 +154,41 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); row.addWidget(self.teach_btn)
         b = QPushButton('Remove selected'); b.clicked.connect(self.remove_example); row.addWidget(b); v.addLayout(row)
-        b = QPushButton('Save builder setup'); b.clicked.connect(self.save_profile); v.addWidget(b)
+        b = _big('Save builder and clean the plan', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
         return w
+
+    def save_and_clean(self):
+        self.save_profile(); self.run_clean()
 
     def _tab_review(self):
         w = QWidget(); v = QVBoxLayout(w)
-        b = QPushButton('Clean this plan'); b.setStyleSheet('font-weight:bold;padding:8px'); b.clicked.connect(self.run_clean); v.addWidget(b)
+        v.addWidget(self._step(3, 'Check it and save', 'Anything the app wasn\'t sure about is in <span style="color:#d00000">red</span> and listed below. '
+                               'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
-        self.show_orig = QCheckBox('Show the builder sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(self.draw_result); v.addWidget(self.show_orig)
-        v.addWidget(QLabel('Needs a look (click to jump; click a marker on the plan to edit it):'))
+        self.show_orig = QCheckBox('Show the builder\'s sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(self.draw_result); v.addWidget(self.show_orig)
+        v.addWidget(QLabel('<b>Needs a look</b>'))
         self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); v.addWidget(self.review, 3)
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
-        self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type)
+        self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1)
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
-        b = QPushButton('Save cleaned plan…'); b.setStyleSheet('font-weight:bold;padding:8px'); b.clicked.connect(self.save_result); v.addWidget(b)
+        b = _big('Save cleaned plan (DWG)…', primary=True); b.clicked.connect(self.save_result); v.addWidget(b)
+        row = QHBoxLayout()
+        b = QPushButton('Redraw the box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
+        b = QPushButton('Teach more symbols'); b.clicked.connect(lambda: self.tabs.setCurrentIndex(1)); row.addWidget(b)
+        b = QPushButton('Clean again'); b.clicked.connect(self.run_clean); row.addWidget(b); v.addLayout(row)
         return w
+
+    def redraw_box(self):
+        self.result = None; self.view.clear_overlay(); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
 
     def _help(self, text):
         l = QLabel(text); l.setWordWrap(True); l.setStyleSheet('color:#444;background:#f4f6f8;padding:8px;border-radius:4px'); return l
 
     # ---------- builders
-    def refresh_builders(self, select=None):
-        self.builder_cb.clear(); self.builder_cb.addItem('— choose builder —')
-        for n in self.settings.list_profiles(): self.builder_cb.addItem(n)
-        self.builder_cb.addItem('+ New builder…')
-        if select:
-            i = self.builder_cb.findText(select)
-            if i >= 0: self.builder_cb.setCurrentIndex(i)
-
-    def on_builder(self, idx):
-        txt = self.builder_cb.itemText(idx)
-        if txt.startswith('+'):
-            name, ok = QInputDialog.getText(self, 'New builder', 'Builder name:')
-            if not ok or not name.strip(): self.builder_cb.setCurrentIndex(0); return
-            self.profile = Profile(name=name.strip()); self.profile.save(self.settings.profile_path(self.profile.name))
-            self.refresh_builders(safe_name(self.profile.name)); self.tabs.setCurrentIndex(1)
-        elif idx == 0:
-            self.profile = None
-        else:
-            self.profile = Profile.load(self.settings.profile_path(txt))
-        self.after_profile_change()
+    def set_builder(self, name):
+        self.profile = Profile.load(self.settings.profile_path(name)) if name else None
+        self.after_profile_change(); self.update_info()
 
     def after_profile_change(self):
         if self.profile:
@@ -196,40 +206,48 @@ class MainWindow(QMainWindow):
         if self.profile: self.profile.inches_per_pt = SCALES[i][1] / 72
 
     # ---------- files
-    def open_file(self):
-        f, _ = QFileDialog.getOpenFileName(self, 'Open builder plan', '', 'Plans (*.pdf *.dwg *.dxf)')
-        if f: self.load(f)
+    def new_cleanup(self):
+        d = StartDialog(self.settings, self, open_settings=lambda parent: self.open_settings(parent))
+        if d.exec() != QDialog.Accepted: return
+        self.set_builder(d.builder_name())
+        self.load(d.path, d.sheet_index)
 
-    def load(self, f):
-        self.result = None; self.region = None; self.pages.clear(); self.sheets = []
+    def load(self, f, index=0):
+        self.result = None; self.region = None; self.sheets = []; self.sheet = None
         ext = Path(f).suffix.lower()
         if ext == '.pdf':
             doc = pymupdf.open(f)
-            for i in range(len(doc)):
-                self.sheets.append(PdfSheet(doc, i)); self.pages.addItem(f'Page {i + 1}')
+            for i in range(len(doc)): self.sheets.append(PdfSheet(doc, i))
         else:
             exe = oda.find_converter(self.settings.oda_path)
             try: dxf = oda.to_dxf(f, exe)
             except Exception as e: QMessageBox.warning(self, 'Can\'t open DWG', str(e)); return
             self.dwg_doc = dwgin.open_drawing(dxf)
-            self.sheets.append(DwgSheet(self.dwg_doc, Path(f).name)); self.pages.addItem(Path(f).name)
+            self.sheets.append(DwgSheet(self.dwg_doc, Path(f).name))
+        self.file_name = Path(f).name
         self.setWindowTitle(f'Plan Cleanup {__version__} — {Path(f).name}')
-        self.pages.setCurrentRow(0)
+        self.on_page(min(index, len(self.sheets) - 1))
 
     def on_page(self, i):
         if i < 0 or i >= len(self.sheets): return
         self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None
-        self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('pan')
-        self.area_lbl.setText('No plan area yet.'); self.tabs.setCurrentIndex(0); self.fill_setup()
+        self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
+        self.area_lbl.setText(''); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
+        self.statusBar().showMessage('Drag a box around the floor plan.')
 
     def on_region(self, rect: QRectF):
         self.region = self.sheet.region_from_view(rect); self.view.set_mode('pan'); self.teacher = None
-        self.area_lbl.setText('Plan area set. Next: builder setup (once per builder), then Clean.')
+
         if self.profile and self.sheet.kind == 'pdf' and not self.profile.pen_roles:
             paths = [p for p in self.sheet.page.get_drawings() if in_region(p, self.region)]
             self.profile.pen_roles = guess_roles(paths)
         self.fill_setup()
-        self.tabs.setCurrentIndex(1 if (self.profile is None or not (self.profile.symbols or self.profile.dwg_block_map)) else 2)
+        if self.profile is None:
+            QMessageBox.information(self, 'Builder', 'Choose a builder with New cleanup first.'); return
+        if not (self.profile.symbols or self.profile.dwg_block_map):
+            self.tabs.setCurrentIndex(1)       # new builder: teach symbols first
+        else:
+            self.run_clean()                   # known builder: clean straight away
 
     # ---------- setup tab
     def fill_setup(self):
@@ -331,7 +349,9 @@ class MainWindow(QMainWindow):
     # ---------- clean + review
     def run_clean(self):
         if not (self.sheet and self.region and self.profile):
-            QMessageBox.information(self, 'Not ready', 'Open a plan, choose the builder and draw a box around the plan first.'); return
+            missing = ('a plan (click New cleanup)' if not self.sheet else 'a builder (click New cleanup)' if not self.profile
+                       else 'a box around the plan (drag one on the sheet)')
+            QMessageBox.information(self, 'Not ready', f'Still needed: {missing}.'); return
         prof = self.profile
         if self.sheet.kind == 'pdf':
             if not prof.symbols: QMessageBox.information(self, 'Builder setup', 'Teach at least one symbol in step 2 first.'); return
@@ -363,7 +383,7 @@ class MainWindow(QMainWindow):
         self._job = job; job.start(); dlg.show(); timer.start(200)
 
     def on_cleaned(self, res: Result):
-        self.result = res; self.tabs.setCurrentIndex(2); self.view.set_mode('review')
+        self.result = res; self.tabs.setCurrentIndex(2); self.view.set_mode('review'); self.statusBar().clearMessage()
         from collections import Counter
         c = Counter(s.cls for s in res.symbols)
         parts = ', '.join(f'{n} {sym_label(k).split(" (")[0].lower()}' for k, n in c.most_common())
@@ -474,12 +494,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'Block library', f'Could not read your block library:\n{e}'); return None
         return self._lib
 
-    def open_settings(self):
+    def open_settings(self, parent=None):
         d = SettingsDialog(self.settings, self)
         if d.exec():
             old = self.settings.block_library; d.apply()
-            if self.settings.block_library != old: self._lib = None
-            self.refresh_builders(self.profile and safe_name(self.profile.name))
+            if self.settings.block_library != old: self._lib = None; self._shapes = None
 
     def save_result(self):
         if not self.result: return
@@ -514,6 +533,7 @@ def main():
     app = QApplication(sys.argv); app.setApplicationName('Plan Cleanup')
     w = MainWindow(); w.show()
     if len(sys.argv) > 1: w.load(sys.argv[1])
+    else: QTimer.singleShot(200, w.new_cleanup)    # start with the New cleanup window
     sys.exit(app.exec())
 
 if __name__ == '__main__':

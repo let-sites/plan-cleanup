@@ -37,11 +37,39 @@ class SheetView(QGraphicsView):
         self.viewport().setCursor(Qt.CrossCursor if mode in ('box', 'teach') else Qt.OpenHandCursor)
 
     def wheelEvent(self, e):
-        f = 1.25 if e.angleDelta().y() > 0 else 0.8
+        # trackpad two-finger scroll moves around; a mouse wheel (or Ctrl/Cmd + scroll) zooms
+        if not e.pixelDelta().isNull() and not (e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier)):
+            d = e.pixelDelta()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - d.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - d.y()); return
+        dy = e.angleDelta().y() or e.pixelDelta().y()
+        if dy == 0: return
+        f = 1.25 if dy > 0 else 0.8
         self.scale(f, f)
+
+    def event(self, e):
+        # trackpad pinch to zoom (macOS)
+        if e.type() == e.Type.NativeGesture and e.gestureType() == Qt.ZoomNativeGesture:
+            f = 1.0 + e.value(); self.scale(f, f); return True
+        return super().event(e)
+
+    def _start_pan(self, pos):
+        self._pan = pos; self.viewport().setCursor(Qt.ClosedHandCursor)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Space and not e.isAutoRepeat():
+            self._space = True; self.viewport().setCursor(Qt.OpenHandCursor); return
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key_Space and not e.isAutoRepeat():
+            self._space = False; self._pan = None; self.set_mode(self.mode); return
+        super().keyReleaseEvent(e)
 
     def mousePressEvent(self, e):
         p = self.mapToScene(e.position().toPoint())
+        if e.button() == Qt.MiddleButton or (getattr(self, '_space', False) and e.button() == Qt.LeftButton):
+            self._start_pan(e.position()); return
         if self.mode == 'box' and e.button() == Qt.LeftButton:
             self._start = p
             self._band = self.scene_.addRect(QRectF(p, p), QPen(QColor('#0a7cff'), 0, Qt.DashLine), QBrush(QColor(10, 124, 255, 30)))
@@ -55,11 +83,17 @@ class SheetView(QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if getattr(self, '_pan', None) is not None:
+            d = e.position() - self._pan; self._pan = e.position()
+            self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - d.x()))
+            self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y())); return
         if self._band is not None:
             self._band.setRect(QRectF(self._start, self.mapToScene(e.position().toPoint())).normalized()); return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if getattr(self, '_pan', None) is not None:
+            self._pan = None; self.set_mode(self.mode); return
         if self._band is not None:
             r = self._band.rect(); self.scene_.removeItem(self._band); self._band = None
             if r.width() > 20 and r.height() > 20:

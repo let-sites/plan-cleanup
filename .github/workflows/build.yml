@@ -63,8 +63,15 @@ jobs:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.*
           if-no-files-found: error
+      - name: Read version
+        id: ver
+        shell: bash
+        run: echo "v=$(python -c 'import planclean; print(planclean.__version__)')" >> "$GITHUB_OUTPUT"
       - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.v }}
+          name: Plan Cleanup ${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
           files: ${{ matrix.name }}.*

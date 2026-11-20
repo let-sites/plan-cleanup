@@ -226,6 +226,16 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
         if len(seq) == 1:
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue   # a solid stroke, not a dashed wire: leave it
+        # only curved dashed lines are wires; a straight dashed run is a cabinet or soffit line: keep its dashes
+        C = P[-1] - P[0]; Lc = float(np.hypot(*C))
+        bow = float(np.abs((P - P[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) if Lc > 1 else 0.0
+        if bow < max(1.5, 0.04 * Lc):
+            removed['straight dashed lines kept'] = removed.get('straight dashed lines kept', 0) + 1
+            for q in seq: res.lines.append(('misc', [tx(*v) for v in q], False))
+            continue
+        if ia < 0 and ib < 0:                                # touches no symbol: not a wire we can redraw
+            for q in seq: res.lines.append(('wiring', [tx(*v) for v in q], False))
+            continue
         A = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else P[0]
         B = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else P[-1]
         if ia >= 0 and ia == ib:

@@ -109,25 +109,38 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 5. which paths stay
     progress('Cleaning')
-    def inside(p, bb, pad):
-        r = p['rect']; return r.x0 >= bb[0] - pad and r.x1 <= bb[2] + pad and r.y0 >= bb[1] - pad and r.y1 <= bb[3] + pad
     radius = {'switch': 5.5, 'dimmer': 5.5}
     removed = {'symbol parts': 0, 'text strokes': 0, 'loose glyphs': 0, 'removed pens': 0}
-    allwords = words
-    for p in pl:
+    # Containment tests done in bulk with numpy: a plan can have tens of thousands of
+    # paths and thousands of symbol hits or words, and a Python double loop over them
+    # takes minutes.
+    R = np.array([[p['rect'].x0, p['rect'].y0, p['rect'].x1, p['rect'].y1] for p in pl], float).reshape(-1, 4)
+    def contained(boxes):
+        out = np.zeros(len(R), bool)
+        if len(boxes) == 0 or len(R) == 0: return out
+        B = np.asarray(boxes, float)
+        for i in range(0, len(R), 2000):
+            r = R[i:i + 2000, None, :]
+            out[i:i + 2000] = ((r[..., 0] >= B[:, 0]) & (r[..., 2] <= B[:, 2]) &
+                               (r[..., 1] >= B[:, 1]) & (r[..., 3] <= B[:, 3])).any(axis=1)
+        return out
+    hit_boxes = [(h['x'] - radius.get(h['cls'], 7.5), h['y'] - radius.get(h['cls'], 7.5),
+                  h['x'] + radius.get(h['cls'], 7.5), h['y'] + radius.get(h['cls'], 7.5)) for h in hits]
+    room_ids = {id(w) for w in rooms}
+    word_boxes = []
+    for w in words:
+        pad = 4.0 if id(w) in room_ids else 0.8; b = w['bb']
+        word_boxes.append((b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
+    in_hit, in_word = contained(hit_boxes), contained(word_boxes)
+    for k, p in enumerate(pl):
         rl = role(p); r = p['rect']
         if rl == 'remove': removed['removed pens'] += 1; continue
         if rl in ('electrical', 'misc', 'opening'):
-            hit = False
-            for h in hits:
-                rad = radius.get(h['cls'], 7.5)
-                if r.x0 >= h['x'] - rad and r.x1 <= h['x'] + rad and r.y0 >= h['y'] - rad and r.y1 <= h['y'] + rad:
-                    hit = True; break
             # long single strokes are wiring that just touches the symbol: keep them
-            if hit and not (rl == 'electrical' and len(p['items']) == 1 and max(r.width, r.height) > 7):
+            if in_hit[k] and not (rl == 'electrical' and len(p['items']) == 1 and max(r.width, r.height) > 7):
                 removed['symbol parts'] += 1; continue
         if rl == 'electrical':
-            if any(inside(p, w['bb'], 4.0 if w in rooms else 0.8) for w in allwords):
+            if in_word[k]:
                 removed['text strokes'] += 1; continue
             if len(p['items']) >= 2 and max(r.width, r.height) < 9 and not any(i[0] == 'c' for i in p['items']):
                 removed['loose glyphs'] += 1; continue

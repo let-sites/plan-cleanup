@@ -11,9 +11,15 @@ def selftest(out_path):
     text = ' '.join(r[1] for r in (res or []))
     with open(out_path, 'w') as f:
         f.write(text)
-    return 0 if 'KITCHEN' in text.upper() else 1
+    from planclean.jobs import selftest_process
+    proc_ok = selftest_process()
+    with open(out_path, 'a') as f:
+        f.write('\nprocess ok' if proc_ok else '\nprocess FAILED')
+    return 0 if 'KITCHEN' in text.upper() and proc_ok else 1
 
 if __name__ == '__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()   # the packaged app re-runs itself for the cleanup process
     if len(sys.argv) > 2 and sys.argv[1] == '--selftest':
         sys.exit(selftest(sys.argv[2]))
     from planclean.gui.main import main

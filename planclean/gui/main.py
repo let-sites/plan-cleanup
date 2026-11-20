@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, sys, traceback, tempfile
 from pathlib import Path
 import pymupdf
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QPointF, QRectF
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QPointF, QRectF, QTimer
 from PySide6.QtGui import QAction, QColor, QPixmap, QImage, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
@@ -18,6 +18,7 @@ from planclean.teach import Teacher
 from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
 from planclean.result import Result
+from planclean.jobs import CleanJob, attach_to_page
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
 
@@ -333,12 +334,32 @@ class MainWindow(QMainWindow):
         prof = self.profile
         if self.sheet.kind == 'pdf':
             if not prof.symbols: QMessageBox.information(self, 'Builder setup', 'Teach at least one symbol in step 2 first.'); return
-            page, region = self.sheet.page, self.region
-            fn = lambda prog: clean_pdf(page, region, prof, progress=prog)
+            self.run_pdf_job(self.sheet.doc.name, self.sheet.index, self.region, prof); return
         else:
             doc, region = self.dwg_doc, self.region
             fn = lambda prog: dwgin.clean_dwg(doc, region, prof, progress=prog)
         run_in_thread(self, fn, self.on_cleaned, 'Cleaning the plan…')
+
+    def run_pdf_job(self, path, index, region, prof):
+        job = CleanJob(path, index, region, prof)
+        dlg = QProgressDialog('Starting…', 'Cancel', 0, 0, self)
+        dlg.setWindowTitle('Cleaning the plan'); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
+        state = {'step': 'Starting'}
+        timer = QTimer(self)
+        def stop():
+            timer.stop(); dlg.close(); self._job = None
+        def tick():
+            for kind, payload in job.poll():
+                if kind == 'progress': state['step'] = payload
+                elif kind == 'done': stop(); self.on_cleaned(attach_to_page(payload, prof, region)); return
+                elif kind == 'failed': stop(); QMessageBox.critical(self, 'Something went wrong', str(payload)[-2000:]); return
+            dlg.setLabelText(f"{state['step']}…  ({int(job.elapsed())} s)")
+        def cancel():
+            if job.finished: return
+            job.cancel(); stop(); self.statusBar().showMessage('Cleaning cancelled.')
+        dlg.canceled.connect(cancel)
+        timer.timeout.connect(tick)
+        self._job = job; job.start(); dlg.show(); timer.start(200)
 
     def on_cleaned(self, res: Result):
         self.result = res; self.tabs.setCurrentIndex(2); self.view.set_mode('review')

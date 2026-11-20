@@ -1,10 +1,10 @@
 """Plan Cleanup main window."""
 from __future__ import annotations
-import os, sys, traceback, tempfile
+import os, sys, math, traceback, tempfile
 from pathlib import Path
 import pymupdf
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QPointF, QRectF, QTimer
-from PySide6.QtGui import QAction, QColor, QPixmap, QImage, QIcon, QKeySequence
+from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
@@ -19,6 +19,7 @@ from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
 from planclean.result import Result
 from planclean.jobs import CleanJob, attach_to_page
+from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
 
@@ -384,15 +385,34 @@ class MainWindow(QMainWindow):
             polys.setdefault(role, []).append([self._view_pt(*p) for p in pts])
         for role, ps in polys.items():
             self.view.add_paths(ps, {'wall': '#111', 'wiring': '#555'}.get(role, '#888'), 1.5 if role == 'wall' else 0)
+        shapes = self.block_shapes()
         for s in self.result.symbols:
             if s.cls == 'remove': continue
             x, y = self._view_pt(s.x, s.y)
-            col = '#ff0000' if s.review else CLASS_COLORS.get(s.cls, '#000')
-            self.view.add_marker(x, y, col, sym_label(s.cls).split(' (')[0].split(' /')[0], payload=s, ring=bool(s.review))
+            polys = [[self._view_pt(*p) for p in pts] for pts in shapes.placed(s, self.settings.block_for(s.cls))]
+            col = '#d00000' if s.review else '#000000'
+            it = self.view.add_paths(polys, col, 0); it.setZValue(8); it.setData(0, s)
+            # an invisible, clickable area over the symbol; review items get a red ring
+            hit = self.view.add_marker(x, y, '#d00000' if s.review else '#00000000', payload=s, ring=bool(s.review), r=11)
+            hit.setBrush(QColor(0, 0, 0, 1))
+        px_per_in = self.view_px_per_inch()
         for t in self.result.texts:
             x, y = self._view_pt(t.x, t.y)
-            it = self.view.scene_.addSimpleText(' / '.join(t.lines)); it.setBrush(QColor('#0a5' if t.kind == 'room' else '#a50'))
-            it.setPos(x - it.boundingRect().width() / 2, y - 6); it.setZValue(9); it.setData(0, t); self.view.overlay.append(it)
+            h_in = self.settings.text_height_room if t.kind == 'room' else self.settings.text_height_note
+            f = QFont('Arial'); f.setPixelSize(max(2, int(round(h_in * px_per_in / 0.72))))
+            it = self.view.scene_.addSimpleText('\n'.join(t.lines), f)
+            it.setBrush(QColor('#d00000' if t.review else '#000000'))
+            br = it.boundingRect(); it.setPos(x - br.width() / 2, y - br.height() / 2)
+            it.setZValue(9); it.setData(0, t); self.view.overlay.append(it)
+
+    def view_px_per_inch(self):
+        a = self._view_pt(0, 0); b = self._view_pt(12, 0)
+        return math.hypot(b[0] - a[0], b[1] - a[1]) / 12
+
+    def block_shapes(self):
+        if getattr(self, '_shapes', None) is None or self._shapes.doc is not self.library():
+            self._shapes = BlockShapes(self.library())
+        return self._shapes
 
     def fill_review(self):
         self.review.clear()

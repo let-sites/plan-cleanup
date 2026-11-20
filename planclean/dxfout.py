@@ -31,6 +31,15 @@ def block_offset(blk):
         if e.dxftype() == 'LINE': ys += [e.dxf.start.y, e.dxf.end.y]
     return (min(ys) + max(ys)) / 2 if ys else 0.0
 
+def placement(s, blk):
+    """Insert point and rotation for a symbol's block (oriented blocks sit on the wall, facing the room)."""
+    x, y, rot = s.x, s.y, 0.0
+    if s.cls in ORIENTED and blk is not None:
+        rot = rotation_deg(s)
+        off = block_offset(blk)
+        x -= s.dx * off; y -= s.dy * off
+    return x, y, rot
+
 def _placeholders(doc):
     if 'SMOKE_CO' not in doc.blocks:
         b = doc.blocks.new('SMOKE_CO')
@@ -70,11 +79,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=9.0, text_not
         name = block_for(s.cls)
         if not name or out.blocks.get(name) is None:
             missing.add(name or s.cls); name = 'UNMAPPED'
-        x, y, rot = s.x, s.y, 0.0
-        if s.cls in ORIENTED:
-            rot = rotation_deg(s)
-            off = block_offset(out.blocks.get(name))
-            x -= s.dx * off; y -= s.dy * off
+        x, y, rot = placement(s, out.blocks.get(name))
         msp.add_blockref(name, (x, y), dxfattribs={'layer': 'ELEC-SYMBOLS', 'rotation': rot})
         if s.review:
             msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})

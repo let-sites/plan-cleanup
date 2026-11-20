@@ -93,6 +93,17 @@ class MainWindow(QMainWindow):
         self.view = SheetView(); self.setCentralWidget(self.view)
         self.view.regionDrawn.connect(self.on_region); self.view.clicked.connect(self.on_teach_click); self.view.itemPicked.connect(self.on_pick)
         self._toolbar(); self._docks()
+        # big on/off switch for the builder's original drawing, pinned to the corner of the plan
+        self.orig_btn = QPushButton('Show original  (O)'); self.orig_btn.setCheckable(True); self.orig_btn.setObjectName('origbtn')
+        self.orig_btn.setToolTip('Flip the builder\'s original drawing on and off underneath the cleaned plan (key: O)')
+        self.orig_btn.setCursor(Qt.PointingHandCursor)
+        self.orig_btn.setStyleSheet('#origbtn{background:white;border:1px solid #c9d3db;border-radius:8px;padding:8px 16px;'
+                                    'font-size:14px;font-weight:600;color:#1f2a33}'
+                                    '#origbtn:hover{background:#edf3f7}'
+                                    '#origbtn:checked{background:#4a90b8;border-color:#4a90b8;color:white}')
+        self.orig_btn.toggled.connect(self._orig_toggled); self.view.set_corner_widget(self.orig_btn); self.orig_btn.hide()
+        a = QAction(self); a.setShortcut(QKeySequence('O')); a.triggered.connect(lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
+        self.addAction(a)
         self.resize(1500, 950)
         self.file_name = ''
         self.statusBar().showMessage('Click New cleanup to start.')
@@ -188,7 +199,7 @@ class MainWindow(QMainWindow):
                                'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
         self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
-        self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(self.draw_result); v.addWidget(self.show_orig)
+        self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(lambda on: self.orig_btn.setChecked(on) if self.orig_btn.isChecked() != on else self.draw_result()); v.addWidget(self.show_orig)
         v.addWidget(QLabel('<b>Needs a look</b>'))
         self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); v.addWidget(self.review, 3)
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
@@ -208,7 +219,7 @@ class MainWindow(QMainWindow):
             self.run_clean()
 
     def redraw_box(self):
-        self.result = None; self.view.clear_overlay(); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
+        self.result = None; self._hide_orig_btn(); self.view.clear_overlay(); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
         self.clean_btn.setEnabled(self.region is not None)
 
     def _help(self, text):
@@ -255,7 +266,10 @@ class MainWindow(QMainWindow):
         self.result = None; self.region = None; self.sheets = []; self.sheet = None
         self.pages.blockSignals(True); self.pages.clear(); self._thumb_queue = []
         ext = Path(f).suffix.lower()
-        if ext == '.pdf':
+        try:
+            with open(f, 'rb') as fh: is_pdf = fh.read(5) == b'%PDF-'
+        except OSError: is_pdf = ext == '.pdf'
+        if is_pdf:
             doc = pymupdf.open(f)
             for i in range(len(doc)): self.sheets.append(PdfSheet(doc, i))
         else:
@@ -274,7 +288,7 @@ class MainWindow(QMainWindow):
     def on_page(self, i):
         if i < 0 or i >= len(self.sheets): return
         self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None
-        self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
+        self._hide_orig_btn(); self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
         self.area_lbl.setText(''); self.clean_btn.setEnabled(False); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
         self.statusBar().showMessage('Find the electrical sheet (↑ ↓), then drag a box around the floor plan.')
 
@@ -434,8 +448,19 @@ class MainWindow(QMainWindow):
         parts = ', '.join(f'{n} {sym_label(k).split(" (")[0].lower()}' for k, n in c.most_common())
         self.summary.setText(f'<b>{len(res.symbols)} symbols:</b> {parts}.<br><b>{sum(1 for t in res.texts if t.kind == "room")} room names</b>, '
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
-        self.draw_result(); self.fill_review()
+        self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
         if self.view.region_item is not None: self.view.fitInView(self.view.region_item, Qt.KeepAspectRatio)
+
+    def _hide_orig_btn(self):
+        self.orig_btn.blockSignals(True); self.orig_btn.setChecked(False); self.orig_btn.setText('Show original  (O)')
+        self.orig_btn.blockSignals(False); self.orig_btn.hide()
+        self.show_orig.blockSignals(True); self.show_orig.setChecked(False); self.show_orig.blockSignals(False)
+        if self.view.page_item is not None: self.view.page_item.setOpacity(1.0)
+
+    def _orig_toggled(self, on):
+        self.orig_btn.setText('Hide original  (O)' if on else 'Show original  (O)')
+        if self.show_orig.isChecked() != on: self.show_orig.setChecked(on)   # redraws
+        else: self.draw_result()
 
     def _view_pt(self, X, Y):
         return self.sheet.to_view(*self.result.to_page(X, Y))
@@ -443,7 +468,7 @@ class MainWindow(QMainWindow):
     def draw_result(self):
         if not self.result: return
         self.view.clear_overlay()
-        self.view.page_item.setOpacity(0.25 if self.show_orig.isChecked() else 0.0)
+        self.view.page_item.setOpacity(0.45 if self.show_orig.isChecked() else 0.0)
         bg = self.view.scene_.addRect(self.view.sceneRect(), Qt.NoPen, QColor('white')); bg.setZValue(-1); self.view.overlay.append(bg)
         polys = {}
         for role, pts, f in self.result.lines:
@@ -529,7 +554,7 @@ class MainWindow(QMainWindow):
             if ok:
                 obj.lines = [l.strip() for l in txt.split('/') if l.strip()]; obj.review = ''
                 if not obj.lines: self.result.texts.remove(obj)
-                self.draw_result(); self.fill_review()
+                self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
 
     def change_type(self, i):
         s = getattr(self, '_sel', None)

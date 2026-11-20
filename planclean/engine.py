@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib, math, re
 import numpy as np
 from . import wiring, detect, ocr
-from .vec import polylines, pen_key, in_region, sample_lines, is_filled
+from .vec import sample_lines_dir, polylines, pen_key, in_region, sample_lines, is_filled
 from .profile import Profile, NOTE_WORDS
 from .result import Result, Sym, Text
 from .symbols import ORIENTED
@@ -63,20 +63,31 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
     faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening', 'casework') and not is_filled(p)
                           and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
-    anyline = sample_lines([p for p in pl if role(p) not in ('electrical', 'remove')
-                            and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
-    def facing(x, y, reach=18.0):
+    anyline, anydir = sample_lines_dir([p for p in pl if role(p) not in ('electrical', 'remove')
+                                        and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
+    RAYS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    def wall_along(x, y, dx_, dy_, reach=18.0):
+        """Distance to the nearest line straight out from (x, y) that crosses the ray square-on.
+        Lines closer than 3 or running along the ray are the symbol's own tails, not a wall."""
+        if not len(anyline): return None
+        rel = anyline - (x, y)
+        along = rel[:, 0] * dx_ + rel[:, 1] * dy_; perp = np.abs(rel[:, 0] * dy_ - rel[:, 1] * dx_)
+        square = np.abs(anydir[:, 0] * dx_ + anydir[:, 1] * dy_) < 0.35
+        m = (along > 3.0) & (along < reach) & (perp < 1.5) & square
+        return float(along[m].min()) if m.any() else None
+    def facing(x, y, reach=18.0, hint=()):
         """Distance to the wall a symbol sits on and the unit direction pointing away from it (page coords).
-        Walls are found straight up, down, left or right, so symbols always sit square to them."""
+        Walls are found straight up, down, left or right, so symbols always sit square to them.
+        hint: ends of the builder's own stem/tails; a wall right at the end of one wins."""
+        for ex, ey in hint:
+            vx, vy = ex - x, ey - y
+            dx_, dy_ = (math.copysign(1, vx), 0) if abs(vx) >= abs(vy) else (0, math.copysign(1, vy))
+            dd = wall_along(x, y, dx_, dy_, reach)
+            if dd is not None and abs(dd - abs(vx * dx_ + vy * dy_)) < 3.0: return dd, (-dx_, -dy_)
         best = None
-        if len(anyline):
-            rel = anyline - (x, y)
-            for dx_, dy_ in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                along = rel[:, 0] * dx_ + rel[:, 1] * dy_; perp = np.abs(rel[:, 0] * dy_ - rel[:, 1] * dx_)
-                m = (along > 0.3) & (along < reach) & (perp < 1.5)
-                if m.any():
-                    dd = float(along[m].min())
-                    if best is None or dd < best[0]: best = (dd, (-dx_, -dy_))
+        for dx_, dy_ in RAYS:
+            dd = wall_along(x, y, dx_, dy_, reach)
+            if dd is not None and (best is None or dd < best[0]): best = (dd, (-dx_, -dy_))
         if best: return best
         d, wp = nearest(faces, x, y)
         ux, uy = x - wp[0], y - wp[1]
@@ -162,6 +173,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         return i if d[i] <= r else -1
     STEM_R = 15.0
     stems = []                       # (end point the wiring may attach to, hit index)
+    hint_ends = {}                   # hit index -> ends of its stem / tail strokes (they point at the wall)
     def trim(piece):
         """Cut out the segments of a wire that belong to a symbol (stem, tails, crosshair)."""
         if len(hxy) == 0: return [piece]
@@ -179,6 +191,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             else:
                 cur.append(piece[i + 1])
         if len(cur) > 1: out.append(np.array(cur))
+        for i in np.nonzero(drop)[0]:
+            hint_ends.setdefault(int(idx[i]), []).extend([tuple(piece[i]), tuple(piece[i + 1])])
         removed['symbol parts'] += int(drop.sum())
         return out
     wire_pieces = []                 # connected polylines of the kept electrical paths
@@ -198,6 +212,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 if ia >= 0 and ia == ib:
                     h = hits[ia]
                     far = (a.x, a.y) if math.hypot(a.x - h['x'], a.y - h['y']) >= math.hypot(b.x - h['x'], b.y - h['y']) else (b.x, b.y)
+                    hint_ends.setdefault(ia, []).extend([(a.x, a.y), (b.x, b.y)])
                     stems.append((far, ia)); removed['symbol parts'] += 1; continue
         if rl == 'electrical':
             if in_word[k]:
@@ -207,6 +222,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if rl == 'electrical':
             for q in wiring.pieces_of(polylines(p)): wire_pieces += trim(q)
             continue
+        if rl == 'misc' and len(p['items']) == 1 and p['items'][0][0] == 'l' and max(r.width, r.height) < 6 \
+                and near_hit(((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2), 28) >= 0:
+            removed['stray letters'] = removed.get('stray letters', 0) + 1; continue   # a stroke of a label by a symbol
         out_role = rl; kept_verbatim.add(k)
         for q in polylines(p):
             res.lines.append((out_role, [tx(*v) for v in q], is_filled(p) and len(q) > 2))
@@ -216,25 +234,29 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 5b. wiring: join the builder's dashes back together and redraw each wire as one clean
     #     arc (or line) that runs from the centre of one symbol to the centre of the other
-    removed['stray letters'] = 0
+    removed.setdefault('stray letters', 0)
     ATTACH = 20.0
-    for seq in wiring.chain(wire_pieces, gap=10.0):
+    def dash_dot(seq):
+        """Wires are drawn dash-dot (long and short pieces); cabinet and soffit lines are even dashes."""
+        if len(seq) < 3: return False
+        L = sorted(float(np.sum(np.hypot(*np.diff(q, axis=0).T))) for q in seq)
+        return L[len(L) // 4] < 0.45 * L[-1 - len(L) // 4]
+    for seq in wiring.chain(wire_pieces, gap=16.0):
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
         length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
         ia, ib = near_hit(P[0], ATTACH), near_hit(P[-1], ATTACH)
-        if len(seq) == 1 and length < 8 and near_hit(P.mean(axis=0), 20) >= 0 and (ia < 0 or ia == ib):
+        if float((P.max(axis=0) - P.min(axis=0)).max()) < 8 and near_hit(P.mean(axis=0), 28) >= 0:
             removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
         if len(seq) == 1:
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue   # a solid stroke, not a dashed wire: leave it
-        # only curved dashed lines are wires; a straight dashed run is a cabinet or soffit line: keep its dashes
+        # curved or dash-dot runs are wires; straight plain dashes are cabinet or soffit lines: keep them
         C = P[-1] - P[0]; Lc = float(np.hypot(*C))
         bow = float(np.abs((P - P[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) if Lc > 1 else 0.0
-        if bow < max(1.5, 0.04 * Lc):
-            removed['straight dashed lines kept'] = removed.get('straight dashed lines kept', 0) + 1
-            for q in seq: res.lines.append(('misc', [tx(*v) for v in q], False))
-            continue
-        if ia < 0 and ib < 0:                                # touches no symbol: not a wire we can redraw
-            for q in seq: res.lines.append(('wiring', [tx(*v) for v in q], False))
+        curved = bow >= max(1.5, 0.04 * Lc)
+        closed = Lc < 0.3 * length                          # loops back on itself (range burners, circles)
+        if (not curved and not dash_dot(seq)) or (closed and ia < 0 and ib < 0):
+            removed['dashed lines kept'] = removed.get('dashed lines kept', 0) + 1
+            for q in seq: res.lines.append(('misc' if not curved else 'wiring', [tx(*v) for v in q], False))
             continue
         A = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else P[0]
         B = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else P[-1]
@@ -250,10 +272,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         else: res.lines.append(('wiring', [f[1], f[2]], False))
 
     # 6. symbols in drawing units, facing into the room
-    for h in hits:
+    for hi, h in enumerate(hits):
         X, Y = tx(h['x'], h['y'])
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']))
-        d, (ux, uy) = facing(h['x'], h['y'])
+        d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()))
         s.dx, s.dy = ux, -uy
         if s.cls in ORIENTED and d <= 18: s.wall = d * K      # the block's insert point goes on this wall line
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"

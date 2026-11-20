@@ -52,8 +52,15 @@ class SheetView(QGraphicsView):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        if getattr(self, '_tr', None) is not None:
+            self._tr.adjustSize(); self._tr.move(self.viewport().width() - self._tr.width() - 14, 14)
         if getattr(self, '_zb', None) is not None:
             self._zb.move(self.viewport().width() - self._zb.width() - 14, self.viewport().height() - self._zb.height() - 14)
+
+    def set_corner_widget(self, w):
+        """A widget pinned to the top-right corner of the drawing (the Original on/off button)."""
+        w.setParent(self); self._tr = w; w.show()
+        w.adjustSize(); w.move(self.viewport().width() - w.width() - 14, 14)
 
     def zoom(self, f, at=None):
         if at is not None:

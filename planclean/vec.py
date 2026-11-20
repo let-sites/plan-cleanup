@@ -65,3 +65,17 @@ def sample_lines(paths, step=0.5):
                 n = max(2, int(np.linalg.norm(b - a) / step))
                 pts.append(np.linspace(a, b, n))
     return np.vstack(pts) if pts else np.zeros((0, 2))
+
+
+def sample_lines_dir(paths, step=0.5):
+    """Like sample_lines, plus the unit direction of the segment each point lies on."""
+    pts, dirs = [], []
+    for p in paths:
+        for q in polylines(p):
+            for a, b in zip(q, q[1:]):
+                L = float(np.linalg.norm(b - a))
+                if L < 1e-6: continue
+                n = max(2, int(L / step))
+                pts.append(np.linspace(a, b, n)); dirs.append(np.repeat([(b - a) / L], n, axis=0))
+    if not pts: return np.zeros((0, 2)), np.zeros((0, 2))
+    return np.vstack(pts), np.vstack(dirs)

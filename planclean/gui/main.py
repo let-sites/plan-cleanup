@@ -4,7 +4,7 @@ import os, sys, math, traceback, tempfile
 from pathlib import Path
 import pymupdf
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QPointF, QRectF, QTimer, QSize
-from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySequence
+from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySequence, QTransform
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
@@ -490,10 +490,16 @@ class MainWindow(QMainWindow):
             it = self.view.add_paths(polys, col, 0); it.setZValue(8); it.setData(0, s)
             for tx_, ty_, th, trot, ttxt in shapes.placed_texts(s, self.settings.block_for(s.cls)):
                 # text insert is its baseline-left corner; draw it the same way
-                vx, vy = self._view_pt(tx_, ty_); f = QFont('Arial'); f.setPixelSize(max(2, int(round(th * self.view_px_per_inch() * 1.35))))
+                # the sheet can be turned relative to the drawing, so map the text's own frame
+                # (its baseline direction and its up direction) through the same transform as the lines
+                ppi = self.view_px_per_inch()
+                vx, vy = self._view_pt(tx_, ty_); f = QFont('Arial'); f.setPixelSize(max(2, int(round(th * ppi * 1.35))))
                 ti = self.view.scene_.addSimpleText(ttxt, f); ti.setBrush(QColor(col))
                 asc = ti.boundingRect().height() * 0.78
-                ti.setTransformOriginPoint(0, asc); ti.setPos(vx, vy - asc); ti.setRotation(-trot)
+                c_, s_ = math.cos(math.radians(trot)), math.sin(math.radians(trot))
+                ax, ay = self._view_pt(tx_ + c_, ty_ + s_); ux, uy = self._view_pt(tx_ - s_, ty_ + c_)
+                X = ((ax - vx) / ppi, (ay - vy) / ppi); Y = ((ux - vx) / ppi, (uy - vy) / ppi)
+                ti.setTransform(QTransform(X[0], X[1], -Y[0], -Y[1], vx + asc * Y[0], vy + asc * Y[1]))
                 ti.setZValue(8); ti.setData(0, s); self.view.overlay.append(ti)
             # an invisible, clickable area over the symbol; review items get a red ring
             hit = self.view.add_marker(x, y, '#d00000' if s.review else '#00000000', payload=s, ring=bool(s.review), r=11)

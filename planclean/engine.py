@@ -179,7 +179,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if len(hxy) == 0: return [piece]
         d = np.hypot(piece[:, None, 0] - hxy[None, :, 0], piece[:, None, 1] - hxy[None, :, 1])
         idx = d.argmin(axis=1); near = d[np.arange(len(piece)), idx] <= STEM_R
-        drop = near[:-1] & near[1:] & (idx[:-1] == idx[1:])          # both ends at the same symbol
+        seg = np.hypot(*np.diff(piece, axis=0).T)
+        # both ends at the same symbol; the bits of a curved wire that swing past a symbol are short: keep them
+        drop = near[:-1] & near[1:] & (idx[:-1] == idx[1:]) & (seg >= 3.0)
         if not drop.any(): return [piece]
         out, cur = [], [piece[0]]
         for i, dr in enumerate(drop):
@@ -241,6 +243,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if len(seq) < 3: return False
         L = sorted(float(np.sum(np.hypot(*np.diff(q, axis=0).T))) for q in seq)
         return L[len(L) // 4] < 0.45 * L[-1 - len(L) // 4]
+    # long solid strokes (stair rails, boxes) are never dashes of a wire: keep them as drawn
+    SOLID = 30.0
+    plen = lambda q: float(np.sum(np.hypot(*np.diff(q, axis=0).T)))
+    for q in wire_pieces:
+        if plen(q) > SOLID: res.lines.append(('wiring', [tx(*v) for v in q], False))
+    wire_pieces = [q for q in wire_pieces if plen(q) <= SOLID]
     for seq in wiring.chain(wire_pieces, gap=16.0):
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
         length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
@@ -258,18 +266,32 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             removed['dashed lines kept'] = removed.get('dashed lines kept', 0) + 1
             for q in seq: res.lines.append(('misc' if not curved else 'wiring', [tx(*v) for v in q], False))
             continue
-        A = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else P[0]
-        B = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else P[-1]
         if ia >= 0 and ia == ib:
             continue                                         # both ends at one symbol: part of it
-        # the point of the wire furthest from the straight line A-B sets how much it bows
-        AB = B - A; L = float(np.hypot(*AB))
-        if L < 1: continue
-        nrm = np.array([-AB[1], AB[0]]) / L
-        off = (P - A) @ nrm; k = int(np.abs(off).argmax())
-        f = wiring.arc_through(tx(*A), tx(*P[k]), tx(*B)) if abs(off[k]) > 0.02 * L else ('line', tx(*A), tx(*B))
-        if f[0] == 'arc': res.arcs.append(('wiring',) + tuple(float(v) for v in f[1:]))
-        else: res.lines.append(('wiring', [f[1], f[2]], False))
+        def redraw(A, B):
+            """One arc (or line) from A to B bowing like the builder's wire, or None if it would not follow it."""
+            AB = B - A; L = float(np.hypot(*AB))
+            if L < 1: return None
+            nrm = np.array([-AB[1], AB[0]]) / L
+            off = (P - A) @ nrm; k = int(np.abs(off).argmax())
+            f = wiring.arc_through(tuple(A), tuple(P[k]), tuple(B)) if abs(off[k]) > 0.02 * L else ('line', tuple(A), tuple(B))
+            curve = wiring.arc_points(*f[1:]) if f[0] == 'arc' else np.linspace(f[1], f[2], 40)
+            # every point of the builder's wire must lie close to the new curve
+            dev = max(float(np.hypot(curve[:, 0] - x, curve[:, 1] - y).min()) for x, y in P[::max(1, len(P) // 40)])
+            return f if dev <= max(4.0, 0.12 * L) else None
+        hA = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else None
+        hB = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else None
+        f = None
+        for A, B in ((hA, hB), (hA, None), (None, hB), (None, None)):
+            f = redraw(A if A is not None else P[0], B if B is not None else P[-1])
+            if f: break
+        if f is None:                                        # nothing fits: keep the builder's wire, joined up
+            res.lines.append(('wiring', [tx(*v) for v in P], False)); continue
+        if f[0] == 'arc':
+            cx, cy, r, a0, a1 = f[1:]
+            # to drawing units (y is flipped, so the arc runs the other way round)
+            X, Y = tx(cx, cy); res.arcs.append(('wiring', float(X), float(Y), float(r * K), float((-a1) % 360), float((-a0) % 360)))
+        else: res.lines.append(('wiring', [tx(*f[1]), tx(*f[2])], False))
 
     # 6. symbols in drawing units, facing into the room
     for hi, h in enumerate(hits):

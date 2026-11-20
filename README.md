@@ -6,12 +6,11 @@ your block, and saves a DWG you can paste into your template.
 
 ## Install
 
-1. **Download the program.** On GitHub, open **Actions → Build installers**, click the latest green run, and download
-   `PlanCleanup-Windows` or `PlanCleanup-Mac` at the bottom. (Tagged versions also appear under **Releases**.)
-   Unzip it anywhere.
-   * Windows: run `PlanCleanup\PlanCleanup.exe`. If Windows warns about an unknown publisher, click
-     **More info → Run anyway**.
-   * Mac: drag `PlanCleanup.app` to Applications. The first time, **right-click → Open** (it isn't signed by Apple yet).
+1. **Download the program** from the repository's **Releases** page (right side of the GitHub page):
+   * Windows: `PlanCleanup-Windows.zip`. Unzip it and run `PlanCleanup\PlanCleanup.exe`. If Windows warns about an
+     unknown publisher, click **More info → Run anyway**.
+   * Mac: `PlanCleanup-Mac.dmg`. Open it and drag **PlanCleanup** onto **Applications**. The first time,
+     **right-click the app → Open** (it isn't signed by Apple yet).
 2. **Install the free ODA File Converter** from <https://www.opendesign.com/guestfiles/oda_file_converter>.
    Plan Cleanup uses it to read and write DWG files. Without it you can still open PDFs and save DXF.
 3. **Open Settings** in Plan Cleanup once:

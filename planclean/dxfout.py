@@ -70,9 +70,9 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         for e in b:
             if not e.dxf.hasattr('layer') or not e.dxf.layer: e.dxf.layer = '0'
             if imported:
-                # the block takes the look of the layer it is placed on ($Standard), like a block made on layer 0
-                e.dxf.layer = '0'
-                if e.dxf.is_supported('color'): e.dxf.color = 0      # BYBLOCK
+                # your blocks live on $Standard (layer 0 would show in every viewport), coloured ByLayer
+                e.dxf.layer = symbol_layer
+                if e.dxf.is_supported('color'): e.dxf.color = 256    # BYLAYER
                 if e.dxf.is_supported('true_color') and e.dxf.hasattr('true_color'): e.dxf.discard('true_color')
             if e.dxf.hasattr('style') and e.dxf.style not in out.styles: e.dxf.style = 'Standard'
     _placeholders(out)

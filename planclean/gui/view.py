@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsRectItem
 CLASS_COLORS = {
     'outlet': '#d62728', 'outlet_240': '#8c1c13', 'switch': '#1f77b4', 'dimmer': '#1f77b4', 'ceiling_light': '#9467bd', 'wall_light': '#ff7f0e',
     'recessed_can': '#2ca02c', 'disk_light': '#8c564b', 'fan': '#17becf', 'exhaust_fan': '#7f7f7f', 'smoke': '#bcbd22',
-    'co_smoke': '#bcbd22', 'ceiling_outlet': '#e377c2', 'floor_outlet': '#e377c2', 'flood_light': '#ff7f0e', 'jbox': '#7f7f7f',
+    'co_smoke': '#bcbd22', 'ceiling_outlet': '#e377c2', 'floor_outlet': '#e377c2', 'flood_light': '#ff7f0e',
 }
 
 class SheetView(QGraphicsView):

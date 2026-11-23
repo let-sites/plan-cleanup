@@ -120,6 +120,16 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         # A wall symbol labelled 220V is a 220/240V outlet (its three lines can read as a wall light).
         if h['cls'] in ('outlet', 'wall_light', 'ceiling_light') and ('220' in h['mods'] or '240' in h['mods']):
             h['cls'] = 'outlet_240'
+    # "EV READY", "EV OUTLET", "CAR CHARGER", "220V" near a symbol: it is a 220/240V outlet (car charger circuit).
+    for w in words:
+        t = re.sub(r'[^A-Z0-9 ]', ' ', w['text'].upper())
+        ev = re.search(r'\bEV\b|CHARG', t); volts = re.search(r'\b2[24]0', t)
+        if ev or volts:
+            cands = [h for h in hits if h['cls'] in ('outlet', 'wall_light', 'ceiling_light', 'outlet_240') and 'GFI' not in h['mods']]
+            if cands:
+                h = min(cands, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
+                if math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < (45 if ev else 30):
+                    h['cls'] = 'outlet_240'; used.add(id(w))
     # "BLK & WIRE FOR CLG. FAN" -> the nearest ceiling light becomes a fan
     for w in words:
         if 'FAN' in w['n'] and ('CLG' in w['n'] or 'WIRE' in w['n']):
@@ -152,10 +162,26 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             notes.append(w)
     notes = ocr.stack_lines(notes)
 
+    # builder settings: symbol kinds LET leaves off this builder's plans (their wires go too)
+    OUTSIDE_ROOMS = ('GARAGE', 'TANDEM', 'PATIO', 'PORCH', 'DECK')
+    def outside_or_garage(h):
+        if 'WP' in h['mods']: return True
+        if not rooms: return False
+        r = min(rooms, key=lambda w: math.hypot(w['cx'] - h['x'], w['cy'] - h['y']))
+        return any(k in r['room'] for k in OUTSIDE_ROOMS)
+    hidden = set()
+    for i, h in enumerate(hits):
+        c = h['cls']
+        if c in ('outlet', 'ceiling_outlet', 'floor_outlet'):
+            if profile.outlets == 'none' or (profile.outlets == 'outside' and not outside_or_garage(h)): hidden.add(i)
+        elif c in ('smoke', 'co_smoke') and not profile.detectors: hidden.add(i)
+        elif c == 'exhaust_fan' and not profile.exhaust_fans: hidden.add(i)
+
     # 5. which paths stay
     progress('Cleaning')
     radius = {'switch': 5.5, 'dimmer': 5.5, 'smoke': 9.5, 'co_smoke': 9.5}
-    removed = {'symbol parts': 0, 'text strokes': 0, 'loose glyphs': 0, 'removed pens': 0}
+    removed = {'symbol parts': 0, 'text strokes': 0, 'loose glyphs': 0, 'removed pens': 0,
+               'symbols left off (builder settings)': len(hidden)}
     # Containment tests done in bulk with numpy: a plan can have tens of thousands of
     # paths and thousands of symbol hits or words, and a Python double loop over them
     # takes minutes.
@@ -371,10 +397,6 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         return out
     _ch = join_free_ends(split_at_symbols(wiring.chain(wire_pieces, gap=16.0)))
     for seq in _ch:
-            a, b = seq[0][0], seq[-1][-1]
-            if all(abs(z[0] - 541) < 30 and 1480 < z[1] < 1570 for z in (a, b)):
-                print('CH', len(seq), a.round(1), wire_hit(a), wiring._dir(seq[0], False).round(2), b.round(1), wire_hit(b), wiring._dir(seq[-1], True).round(2))
-    for seq in _ch:
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
         length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
         ia, ib = wire_hit(P[0]), wire_hit(P[-1])
@@ -403,6 +425,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             else: ib = ahead_hit(P[-1], P[-1] - P[max(-4, -len(P))])
         if ia >= 0 and ia == ib:
             continue                                         # both ends at one symbol: part of it
+        if ia in hidden or ib in hidden:
+            continue                                         # wire to a symbol this builder's plans leave off
         def redraw(A, B):
             """One arc (or line) from A to B bowing like the builder's wire, or None if it would not follow it."""
             AB = B - A; L = float(np.hypot(*AB))
@@ -445,6 +469,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 6. symbols in drawing units, facing into the room
     for hi, h in enumerate(hits):
+        if hi in hidden: continue
         X, Y = tx(h['x'], h['y'])
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']))
         d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()))

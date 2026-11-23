@@ -17,7 +17,6 @@ SYMBOL_TYPES = {
     "ceiling_outlet": ("Ceiling outlet (garage door etc.)",   "standard_outlet", False),
     "floor_outlet":   ("Floor outlet",                         "standard_floor_outlet_lisp", False),
     "flood_light":    ("Flood light",                          "flood_light_lisp", True),
-    "jbox":           ("J-box",                                "", False),
     "remove":         ("Remove it (don't replace)",            "", False),
 }
 ORIENTED = {k for k, v in SYMBOL_TYPES.items() if v[2]}

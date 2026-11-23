@@ -22,7 +22,7 @@ from planclean.jobs import CleanJob, attach_to_page
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
-from .start import StartDialog, _big
+from .start import StartDialog, _big, DropOverlay, _plan_url, BuilderSettingsDialog
 THUMB_W = 200
 
 SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self.orig_btn.toggled.connect(self._orig_toggled); self.view.set_corner_widget(self.orig_btn); self.orig_btn.hide()
         a = QAction(self); a.setShortcut(QKeySequence('O')); a.triggered.connect(lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
         self.addAction(a)
+        self.setAcceptDrops(True); self._overlay = DropOverlay(self)
         self.resize(1500, 950)
         self.file_name = ''
         self.statusBar().showMessage('Click New cleanup to start.')
@@ -187,8 +188,15 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); row.addWidget(self.teach_btn)
         b = QPushButton('Remove selected'); b.clicked.connect(self.remove_example); row.addWidget(b); v.addLayout(row)
+        b = QPushButton('Builder settings (what to show)…'); b.clicked.connect(self.builder_settings); v.addWidget(b)
         b = _big('Save builder and clean the plan', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
         return w
+
+    def builder_settings(self):
+        if not self.profile: QMessageBox.information(self, 'Builder', 'Choose or create a builder first.'); return
+        if BuilderSettingsDialog(self.profile, self).exec() == QDialog.Accepted:
+            self.save_profile()
+            if self.sheet: self.run_clean()
 
     def save_and_clean(self):
         self.save_profile(); self.run_clean()
@@ -354,7 +362,7 @@ class MainWindow(QMainWindow):
         q = QImage(img.data, img.shape[1], img.shape[0], img.strides[0], QImage.Format_Grayscale8).copy()
         it = QTableWidgetItem(); it.setIcon(QIcon(QPixmap.fromImage(q))); it.setData(Qt.UserRole, ex.id); self.examples.setItem(r, 0, it)
         self.examples.setRowHeight(r, 52)
-        cb = QComboBox(); keys = list(SYMBOL_TYPES); cb.addItems([SYMBOL_TYPES[k][0] for k in keys]); cb.setCurrentIndex(keys.index(ex.cls))
+        cb = QComboBox(); keys = list(SYMBOL_TYPES); cb.addItems([SYMBOL_TYPES[k][0] for k in keys]); cb.setCurrentIndex(keys.index(ex.cls) if ex.cls in keys else 0)
         cb.currentIndexChanged.connect(lambda i, e=ex: setattr(e, 'cls', keys[i])); self.examples.setCellWidget(r, 1, cb)
 
     def on_role_select(self):
@@ -551,7 +559,7 @@ class MainWindow(QMainWindow):
         self._hl.setZValue(20); self.view.overlay.append(self._hl)
         if zoom: self.view.fitInView(QRectF(x - 8 * r, y - 5 * r, 16 * r, 10 * r), Qt.KeepAspectRatio)
 
-    def on_pick(self, obj, zoom=False):
+    def on_pick(self, obj, zoom=False, ask=True):
         self._sel = obj
         if hasattr(obj, 'cls'):
             self.edit_type.setCurrentIndex(list(SYMBOL_TYPES).index(obj.cls))
@@ -559,28 +567,69 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f'Selected: {sym_label(obj.cls)} (match {obj.score:.2f}) {" ".join(obj.mods)}')
         else:
             x, y = self._view_pt(obj.x, obj.y); self.highlight(x, y, zoom)
-            txt, ok = QInputDialog.getText(self, 'Edit text', 'Text (use / for a new line):', text=' / '.join(obj.lines))
-            if ok:
-                obj.lines = [l.strip() for l in txt.split('/') if l.strip()]; obj.review = ''
-                if not obj.lines: self.result.texts.remove(obj)
-                self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
+            self.statusBar().showMessage(f'Selected note: {" ".join(obj.lines)}. Click it again to edit or delete it, or use the buttons.')
+            if ask: self.edit_note(obj)
+
+    def edit_note(self, obj):
+        """Change a note's words, or delete it."""
+        d = QDialog(self); d.setWindowTitle('Note'); v = QVBoxLayout(d)
+        v.addWidget(QLabel('Text (use / for a new line):'))
+        ed = QLineEdit(' / '.join(obj.lines)); ed.setMinimumWidth(420); v.addWidget(ed)
+        bb = QDialogButtonBox(); save = bb.addButton('Save', QDialogButtonBox.AcceptRole)
+        dele = bb.addButton('Delete note', QDialogButtonBox.DestructiveRole); bb.addButton('Cancel', QDialogButtonBox.RejectRole)
+        choice = {}
+        save.clicked.connect(lambda: (choice.setdefault('a', 'save'), d.accept()))
+        dele.clicked.connect(lambda: (choice.setdefault('a', 'delete'), d.accept()))
+        bb.rejected.connect(d.reject); v.addWidget(bb)
+        if not d.exec(): return
+        if choice.get('a') == 'delete' or not ed.text().strip(('/ ')):
+            if obj in self.result.texts: self.result.texts.remove(obj)
+            self._sel = None
+        else:
+            obj.lines = [l.strip() for l in ed.text().split('/') if l.strip()]; obj.review = ''
+        self._after_review_change(); self.orig_btn.show(); self.orig_btn.raise_()
 
     def change_type(self, i):
         s = getattr(self, '_sel', None)
         if s is None or not hasattr(s, 'cls'): return
-        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self.draw_result(); self.fill_review()
+        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._after_review_change()
 
     def delete_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
         if hasattr(s, 'cls'): self.result.symbols.remove(s)
-        else: self.result.texts.remove(s)
-        self._sel = None; self.draw_result(); self.fill_review()
+        elif s in self.result.texts: self.result.texts.remove(s)
+        self._sel = None; self._after_review_change()
 
     def ok_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
-        s.review = ''; self.draw_result(); self.fill_review()
+        s.review = ''; self._after_review_change()
+
+    def _after_review_change(self):
+        """Redraw, then move straight on to the next item on the list."""
+        row = max(self.review.currentRow(), 0)
+        self.draw_result(); self.fill_review()
+        if self.review.count():
+            self.review.blockSignals(True); self.review.setCurrentRow(min(row, self.review.count() - 1)); self.review.blockSignals(False)
+            self.on_pick(self.review.currentItem().data(Qt.UserRole), zoom=True, ask=False)
+
+    # ---------- drag a plan onto the window
+    def dragEnterEvent(self, e):
+        if _plan_url(e.mimeData()): e.acceptProposedAction(); self._overlay.show_over()
+
+    def dragLeaveEvent(self, e):
+        self._overlay.hide()
+
+    def dropEvent(self, e):
+        self._overlay.hide()
+        f = _plan_url(e.mimeData())
+        if not f: return
+        d = StartDialog(self.settings, self, open_settings=lambda parent: self.open_settings(parent))
+        d.set_file(f)
+        if self.profile and d.builder.findText(self.profile.name) > 0: d.builder.setCurrentIndex(d.builder.findText(self.profile.name))
+        if d.exec() != QDialog.Accepted: return
+        self.set_builder(d.builder_name()); self.load(d.path, d.sheet_index)
 
     # ---------- saving
     def library_blocks(self):

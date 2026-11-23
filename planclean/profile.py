@@ -53,12 +53,18 @@ class Profile:
     room_text_min_size: float = 10.0        # text height in points
     dwg_block_map: dict = field(default_factory=dict)   # builder DWG block name -> symbol type
     dwg_layer_roles: dict = field(default_factory=dict) # builder DWG layer -> pen role
+    # what LET's finished plan shows for this builder
+    outlets: str = 'all'                    # 'all' | 'outside' (exterior and garage only) | 'none'
+    detectors: bool = True                  # smoke and smoke/CO detectors
+    exhaust_fans: bool = True
     TEMPLATE_SCALE = 6
 
     @staticmethod
     def load(path):
         d = json.loads(Path(path).read_text())
         d['symbols'] = [SymbolExample(**s) for s in d.get('symbols', [])]
+        for ex in d['symbols']:
+            if ex.cls == 'jbox': ex.cls = 'ceiling_light'     # the J-box type was retired
         p = Profile(**{k: v for k, v in d.items() if k in Profile.__dataclass_fields__})
         return p
 

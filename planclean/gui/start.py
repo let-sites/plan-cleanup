@@ -5,11 +5,69 @@ import pymupdf
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QImage, QPixmap, QIcon, QFont
 from PySide6.QtWidgets import (QStackedWidget, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QListWidget,
-                               QListWidgetItem, QFileDialog, QInputDialog, QListView, QFrame)
+                               QListWidgetItem, QFileDialog, QInputDialog, QListView, QFrame, QRadioButton, QCheckBox, QButtonGroup,
+                               QDialogButtonBox)
 from planclean.profile import Profile, safe_name
 from planclean import oda
 
 THUMB = 260
+PLAN_EXTS = ('.pdf', '.dwg', '.dxf')
+
+def _plan_url(mime):
+    """The first dragged file that is a plan, or None."""
+    if not mime.hasUrls(): return None
+    for u in mime.urls():
+        f = u.toLocalFile()
+        if f.lower().endswith(PLAN_EXTS): return f
+        try:
+            with open(f, 'rb') as fh:
+                if fh.read(5) == b'%PDF-': return f      # a PDF saved without its .pdf ending
+        except OSError: pass
+    return None
+
+class DropOverlay(QLabel):
+    """A blue sheet over a window while a plan file is dragged onto it."""
+    def __init__(self, parent):
+        super().__init__('Drop the plan here', parent)
+        self.setAlignment(Qt.AlignCenter); self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setStyleSheet('background:rgba(74,144,184,150);color:white;font-size:28px;font-weight:700;'
+                           'border:4px dashed white;border-radius:14px')
+        self.hide()
+    def show_over(self):
+        self.setGeometry(self.parentWidget().rect().adjusted(8, 8, -8, -8)); self.raise_(); self.show()
+
+OUTLET_CHOICES = [('all', 'All outlets'), ('outside', 'Only exterior and garage outlets'), ('none', 'No outlets')]
+
+class BuilderSettingsDialog(QDialog):
+    """What LET's finished plan shows for one builder."""
+    def __init__(self, profile, parent=None):
+        super().__init__(parent); self.profile = profile
+        self.setWindowTitle(f'Builder settings: {profile.name}')
+        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 16)
+        t = QLabel(f'What to show on {profile.name} plans'); t.setStyleSheet('font-size:18px;font-weight:700'); v.addWidget(t)
+        v.addWidget(QLabel('<b>Outlets</b>'))
+        self.out_group = QButtonGroup(self)
+        for i, (key, text) in enumerate(OUTLET_CHOICES):
+            r = QRadioButton(text); r.setChecked(profile.outlets == key); self.out_group.addButton(r, i); v.addWidget(r)
+        hint = QLabel('Exterior means outlets marked WP or nearest a patio, porch or deck. Garage means nearest the garage label.')
+        hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
+        v.addWidget(QLabel('<b>Other symbols</b>'))
+        self.det = QCheckBox('Smoke and smoke/CO detectors'); self.det.setChecked(profile.detectors); v.addWidget(self.det)
+        self.fan = QCheckBox('Exhaust fans (and their wires)'); self.fan.setChecked(profile.exhaust_fans); v.addWidget(self.fan)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addSpacing(8); v.addWidget(bb)
+
+    def accept(self):
+        self.profile.outlets = OUTLET_CHOICES[max(self.out_group.checkedId(), 0)][0]
+        self.profile.detectors = self.det.isChecked(); self.profile.exhaust_fans = self.fan.isChecked()
+        super().accept()
+
+def edit_builder_settings(settings, name, parent=None):
+    """Open the settings for a saved builder and save them. True if saved."""
+    path = settings.profile_path(name)
+    p = Profile.load(path)
+    if BuilderSettingsDialog(p, parent).exec() != QDialog.Accepted: return False
+    p.save(path); return True
 
 def _heading(n, text):
     l = QLabel(f'<span style="color:#4a90b8;font-weight:700">{n}</span>&nbsp;&nbsp;<b>{text}</b>')
@@ -24,7 +82,7 @@ class StartDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('New cleanup'); self.settings = settings; self.open_settings = open_settings
         self.path = None; self.doc = None; self.sheet_index = 0
-        self.setAcceptDrops(True)
+        self.setAcceptDrops(True); self._overlay = DropOverlay(self)
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget(); outer.addWidget(self.stack)
 
@@ -43,7 +101,8 @@ class StartDialog(QDialog):
         row = QHBoxLayout(); self.builder = QComboBox(); self.builder.setMinimumWidth(300)
         self.builder.currentIndexChanged.connect(self.update_state)
         nb = _big('New builder…'); nb.clicked.connect(self.new_builder)
-        row.addWidget(self.builder); row.addWidget(nb); row.addStretch(); v.addLayout(row)
+        self.bset = _big('Builder settings…'); self.bset.clicked.connect(self.builder_settings)
+        row.addWidget(self.builder); row.addWidget(nb); row.addWidget(self.bset); row.addStretch(); v.addLayout(row)
         self.fill_builders()
         v.addStretch()
         self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setTextFormat(Qt.RichText)
@@ -101,8 +160,13 @@ class StartDialog(QDialog):
     def new_builder(self):
         name, ok = QInputDialog.getText(self, 'New builder', 'Builder name:')
         if ok and name.strip():
-            p = Profile(name=name.strip()); p.save(self.settings.profile_path(p.name))
+            p = Profile(name=name.strip())
+            BuilderSettingsDialog(p, self).exec()          # what this builder's plans should show
+            p.save(self.settings.profile_path(p.name))
             self.fill_builders(safe_name(p.name))
+
+    def builder_settings(self):
+        if self.builder_name(): edit_builder_settings(self.settings, self.builder_name(), self)
 
     def builder_name(self):
         return self.builder.currentText() if self.builder.currentIndex() > 0 else None
@@ -113,16 +177,22 @@ class StartDialog(QDialog):
         if f: self.set_file(f)
 
     def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls(): e.acceptProposedAction()
+        if _plan_url(e.mimeData()): e.acceptProposedAction(); self._overlay.show_over()
+
+    def dragLeaveEvent(self, e):
+        self._overlay.hide()
 
     def dropEvent(self, e):
-        for u in e.mimeData().urls():
-            if u.toLocalFile().lower().endswith(('.pdf', '.dwg', '.dxf')): self.set_file(u.toLocalFile()); break
+        self._overlay.hide()
+        f = _plan_url(e.mimeData())
+        if f: self.set_file(f)
 
     def set_file(self, f):
         self.path = f; self.file_lbl.setText(Path(f).name); self.file_lbl.setStyleSheet('border:none;font-weight:600;font-size:15px')
         self.sheets.clear(); self._timer.stop(); self.doc = None
-        is_pdf = f.lower().endswith('.pdf')
+        try:
+            with open(f, 'rb') as fh: is_pdf = fh.read(5) == b'%PDF-'
+        except OSError: is_pdf = f.lower().endswith('.pdf')
         if is_pdf:
             self.doc = pymupdf.open(f)
             blank = QPixmap(THUMB, int(THUMB * 0.65)); blank.fill(Qt.white)
@@ -145,7 +215,7 @@ class StartDialog(QDialog):
 
     def update_state(self, *_):
         if not hasattr(self, 'start'): return
-        self.next.setEnabled(bool(self.path and self.builder_name()))
+        self.next.setEnabled(bool(self.path and self.builder_name())); self.bset.setEnabled(bool(self.builder_name()))
         self.next.setText('Open')
         self.start.setEnabled(self.sheets.currentRow() >= 0)
         self.sheet_index = max(self.sheets.currentRow(), 0)

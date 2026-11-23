@@ -41,6 +41,15 @@ class BlockShapes:
                     ins = e.dxf.insert
                     txt.append((ins.x, ins.y, float(e.dxf.get('height', 1.0)), float(e.dxf.get('rotation', 0.0)), e.dxf.text))
                     continue
+                if e.dxftype() == 'MTEXT':
+                    t = e.plain_text().split('\n')[0].strip()
+                    if t:
+                        h = float(e.dxf.get('char_height', 1.0)); ap = int(e.dxf.get('attachment_point', 1))
+                        ins = e.dxf.insert; w = 0.75 * h * len(t)
+                        x = ins.x - (w / 2 if ap in (2, 5, 8) else w if ap in (3, 6, 9) else 0)
+                        y = ins.y - (h if ap <= 3 else h / 2 if ap <= 6 else 0)      # to the baseline
+                        txt.append((x, y, h, float(e.dxf.get('rotation', 0.0)), t))
+                    continue
                 if e.dxftype() in _SKIP: continue
                 try:
                     p = ezpath.make_path(e)

@@ -55,7 +55,7 @@ def test_pdf_teach_and_clean(tmp_path=None):
     missing = dxfout.write_dxf(res, out, None, Settings().block_for)
     d = ezdxf.readfile(out)
     assert len(d.modelspace().query('INSERT')) == 4
-    assert 'standard_outlet_lisp' in missing
+    assert 'standard_outlet' in missing
 
 def test_dwg_input():
     tmp = tempfile.mkdtemp()

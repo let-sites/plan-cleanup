@@ -63,7 +63,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     letters = [p for p in pl if role(p) in ('wall', 'misc', 'casework') and not is_filled(p)
                and max(p['rect'].width, p['rect'].height) < 30]
     VOCAB = ({t for k in profile.room_names for t in k.split()} |
-             {'ELECTRICAL', 'PLAN', 'OPT.', 'OPTIONAL', 'CAR', 'BAY', 'SCALE', 'FLOOR', 'FIRST', 'SECOND', 'LIGHTING',
+             {'ELECTRICAL', 'ELECTRIC', 'PLAN', 'OPT.', 'OPTIONAL', 'CAR', 'BAY', 'SCALE', 'FLOOR', 'FIRST', 'SECOND', 'LIGHTING',
               'SPACE', 'READY', 'SPRINKLER', 'ABOVE', 'BELOW', 'LIGHT', 'SWITCH', 'FUTURE', 'PRE-WIRE', 'APPLIANCES',
               'FIREPLACE', 'DOOR', 'WIRE', 'OUTLET', 'CEILING', 'FAN', 'GARAGE', 'DISCONNECT'})
     def known(t): return t in VOCAB or re.fullmatch(r'\d+(ST|ND|RD|TH)', t) is not None

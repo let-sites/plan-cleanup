@@ -129,7 +129,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if cands:
                 h = min(cands, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
                 if math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < (45 if ev else 30):
-                    h['cls'] = 'outlet_240'; used.add(id(w))
+                    h['cls'] = 'outlet_240'
+                    if not ev: used.add(id(w))           # 'EV READY' stays on the plan as a note
     # "BLK & WIRE FOR CLG. FAN" -> the nearest ceiling light becomes a fan
     for w in words:
         if 'FAN' in w['n'] and ('CLG' in w['n'] or 'WIRE' in w['n']):
@@ -154,7 +155,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         n = w['n']
         if re.fullmatch(r"[&$S ]+", n) or any(p.match(n.replace(' ', '')) or p.match(n) for p in drops):
             res.dropped_labels.append(n); continue
-        m = difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.6)
+        m = difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.7)
         if m and w['size'] >= profile.room_text_min_size:
             w['room'] = profile.room_names[m[0]]; rooms.append(w)
         else:
@@ -201,11 +202,18 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     hit_boxes = [(h['x'] - radius.get(h['cls'], 7.5), h['y'] - radius.get(h['cls'], 7.5),
                   h['x'] + radius.get(h['cls'], 7.5), h['y'] + radius.get(h['cls'], 7.5)) for h in hits]
     room_ids = {id(w) for w in rooms}
-    word_boxes = []
+    word_boxes, word_boxes_ext = [], []
     for w in words:
         pad = 4.0 if id(w) in room_ids else 0.8; b = w['bb']
+        ex = ey = 0.0
+        nch = len(re.sub(r'\s', '', w['text']))
+        if nch >= 3:     # reach two letters past each end along the line of text: the reader can drop an end letter
+            bw, bh = b[2] - b[0], b[3] - b[1]
+            if bw >= bh: ex = 2 * bw / nch
+            else: ey = 2 * bh / nch
         word_boxes.append((b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
-    in_hit, in_word = contained(hit_boxes), contained(word_boxes)
+        word_boxes_ext.append((b[0] - pad - ex, b[1] - pad - ey, b[2] + pad + ex, b[3] + pad + ey))
+    in_hit, in_word, in_word_ext = contained(hit_boxes), contained(word_boxes), contained(word_boxes_ext)
     hxy = np.array([[h['x'], h['y']] for h in hits], float).reshape(-1, 2)
     def near_hit(pt, r):
         if len(hxy) == 0: return -1
@@ -283,7 +291,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                     hint_ends.setdefault(ia, []).extend([(a.x, a.y), (b.x, b.y)])
                     stems.append((far, ia)); removed['symbol parts'] += 1; continue
         if rl == 'electrical':
-            if in_word[k]:
+            # just past a word's ends only letter shapes go (a dropped end letter), never a wire's dashes
+            if in_word[k] or (in_word_ext[k] and len(p['items']) >= 2 and not smooth_dash(p) and not full_circle(p)):
                 removed['text strokes'] += 1; continue
             if len(p['items']) >= 2 and max(r.width, r.height) < 9 and not any(i[0] == 'c' for i in p['items']) \
                     and not smooth_dash(p):
@@ -481,6 +490,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             dev = max(float(np.hypot(curve[:, 0] - x, curve[:, 1] - y).min()) for x, y in mid[::max(1, len(mid) // 40)])
             return f if (dev <= max(5.0, 0.15 * L) or forced) else None
         forced = to_note(ia, P[0]) or to_note(ib, P[-1])
+        if ia < 0 and ib < 0 and not forced and length < 60:
+            for q in seq: res.lines.append(('misc', [tx(*v) for v in q], False))
+            continue                                         # a wire always runs to a symbol or a note
         hA = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else None
         hB = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else None
         f = None

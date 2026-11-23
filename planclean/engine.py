@@ -123,7 +123,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # "EV READY", "EV OUTLET", "CAR CHARGER", "220V" near a symbol: it is a 220/240V outlet (car charger circuit).
     for w in words:
         t = re.sub(r'[^A-Z0-9 ]', ' ', w['text'].upper())
-        ev = re.search(r'\bEV\b|CHARG', t); volts = re.search(r'\b2[24]0', t)
+        ev = re.search(r'\bEV(\b|READY|OUTLET|CHARG)|CHARG', t); volts = re.search(r'\b2[24]0', t)
         if ev or volts:
             cands = [h for h in hits if h['cls'] in ('outlet', 'wall_light', 'ceiling_light', 'outlet_240') and 'GFI' not in h['mods']]
             if cands:
@@ -235,6 +235,23 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             hint_ends.setdefault(int(idx[i]), []).extend([tuple(piece[i]), tuple(piece[i + 1])])
         removed['symbol parts'] += int(drop.sum())
         return out
+    def smooth_dash(p):
+        """A short dash of a curved wire: one open run of segments, end to end, bending gently.
+        (Letter strokes left outside word boxes turn sharply or branch.)"""
+        it = p['items']
+        if any(i[0] != 'l' for i in it): return False
+        pts = [it[0][1]]
+        for i in it:
+            if math.hypot(i[1].x - pts[-1].x, i[1].y - pts[-1].y) > 0.05: return False
+            pts.append(i[2])
+        if math.hypot(pts[0].x - pts[-1].x, pts[0].y - pts[-1].y) < 2.0: return False
+        turn = 0.0
+        for a, b, c in zip(pts, pts[1:], pts[2:]):
+            u = math.atan2(b.y - a.y, b.x - a.x); v = math.atan2(c.y - b.y, c.x - b.x)
+            t = abs((v - u + math.pi) % (2 * math.pi) - math.pi)
+            if t > math.radians(30): return False
+            turn += t
+        return turn < math.radians(50)
     wire_pieces = []                 # connected polylines of the kept electrical paths
     kept_verbatim = set()
     for k, p in enumerate(pl):
@@ -259,7 +276,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if rl == 'electrical':
             if in_word[k]:
                 removed['text strokes'] += 1; continue
-            if len(p['items']) >= 2 and max(r.width, r.height) < 9 and not any(i[0] == 'c' for i in p['items']):
+            if len(p['items']) >= 2 and max(r.width, r.height) < 9 and not any(i[0] == 'c' for i in p['items']) \
+                    and not smooth_dash(p):
                 removed['loose glyphs'] += 1; continue
         if rl == 'electrical':
             for q in wiring.pieces_of(polylines(p)): wire_pieces += trim(q)

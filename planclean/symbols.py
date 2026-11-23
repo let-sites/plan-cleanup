@@ -2,7 +2,7 @@
 # key: (label shown to the user, default block in your library, turned toward the wall?)
 SYMBOL_TYPES = {
     "outlet":         ("Outlet (any: standard, GFI, WP, 220)", "standard_outlet", True),
-    "switch":         ("Switch (single or 3-way)",            "AAAA_standardswitch_let", True),
+    "switch":         ("Switch (single or 3-way)",            "standard_switch", True),
     "dimmer":         ("Dimmer switch",                        "standard_dimmerswitch_lisp", True),
     "ceiling_light":  ("Ceiling light",                        "standard_ceiling_light_prewire", False),
     "wall_light":     ("Wall light / sconce",                  "standard_wall_light", True),

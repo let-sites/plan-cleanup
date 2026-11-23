@@ -31,30 +31,40 @@ def _unrotate_pts(b, rot, shape_before):
     if rot == cv2.ROTATE_90_CLOCKWISE: return np.c_[b[:, 1], H - 1 - b[:, 0]]
     if rot == cv2.ROTATE_180: return np.c_[W - 1 - b[:, 0], H - 1 - b[:, 1]]
 
-SNAP = 128      # points (512 px at scale 4, a whole number of the text finder's 32 px steps)
+TILE, PAD = 512, 160      # points: page-fixed reading tiles, and how far past its edges each tile reads
 
 def _disp(x, y, rot):
     """Page point -> display orientation (up to a shift, which nothing here depends on)."""
     return {90: (-y, x), 180: (-x, -y), 270: (y, -x)}.get(rot % 360, (x, y))
 
 def read_words(paths, region, page_rotation=0, scale=4):
-    """The text finder is sensitive to the image's edges and size, so the same word can read
-    differently (or not at all) depending on how the plan box was drawn. Read two page-fixed areas,
-    the box snapped outward to a 128 pt page grid and that area grown by 64 pt, and keep the better
-    reading of each word: boxes drawn a little differently read the same images, and a word one
-    reading misses the other usually finds."""
-    snap = (math.floor(region[0] / SNAP) * SNAP, math.floor(region[1] / SNAP) * SNAP,
-            math.ceil(region[2] / SNAP) * SNAP, math.ceil(region[3] / SNAP) * SNAP)
-    words = _read_area(paths, snap, page_rotation, scale)
-    grown = (snap[0] - 64, snap[1] - 64, snap[2] + 64, snap[3] + 64)
-    for w in _read_area(paths, grown, page_rotation, scale):
+    """Read the text in region. The text finder is sensitive to the image's edges and size, so the
+    same word could read differently (or not at all) depending on how the plan box was drawn. So the
+    sheet is read in fixed tiles measured from the page origin: away from the box's edges a word's
+    reading doesn't depend on the box. Two tilings, the second shifted half a tile, and the better
+    reading of each word is kept."""
+    words = _read_tiles(paths, region, page_rotation, scale, 0)
+    for w in _read_tiles(paths, region, page_rotation, scale, TILE // 2):
         same = [v for v in words if _overlap(v['bb'], w['bb']) > 0.4]
         if not same: words.append(w)
-        elif w['score'] > max(v['score'] for v in same) + 0.05:
+        elif w['score'] > max(v['score'] for v in same) + 0.02:
             for v in same: words.remove(v)
             words.append(w)
-    words = [w for w in words if region[0] <= w['cx'] <= region[2] and region[1] <= w['cy'] <= region[3]]
     return merge_same_line(words)
+
+def _read_tiles(paths, region, page_rotation, scale, shift):
+    words = []
+    for tx in range(int(math.floor((region[0] - shift) / TILE) * TILE + shift), int(math.ceil(region[2])), TILE):
+        for ty in range(int(math.floor((region[1] - shift) / TILE) * TILE + shift), int(math.ceil(region[3])), TILE):
+            rect = (tx - PAD, ty - PAD, tx + TILE + PAD, ty + TILE + PAD)
+            tp = [p for p in paths if p['rect'].x1 >= rect[0] and p['rect'].x0 <= rect[2]
+                  and p['rect'].y1 >= rect[1] and p['rect'].y0 <= rect[3]]
+            if not tp: continue
+            for w in _read_area(tp, rect, page_rotation, scale):
+                if tx <= w['cx'] < tx + TILE and ty <= w['cy'] < ty + TILE \
+                        and region[0] <= w['cx'] <= region[2] and region[1] <= w['cy'] <= region[3]:
+                    words.append(w)
+    return words
 
 def _overlap(a, b):
     """Intersection over the smaller box."""
@@ -70,7 +80,7 @@ def _read_area(paths, region, page_rotation, scale):
     words = []
     for extra in (None, cv2.ROTATE_90_CLOCKWISE):   # horizontal text, then vertical (reads bottom-to-top)
         im = cv2.rotate(disp, extra) if extra is not None else disp
-        res, _ = engine()(cv2.cvtColor(im, cv2.COLOR_GRAY2BGR))
+        res, _ = engine()(cv2.cvtColor(im, cv2.COLOR_GRAY2BGR), use_cls=False)   # we turn the image ourselves; the flip guesser only adds upside-down misreads
         for box, t, sc in (res or []):
             d = _unrotate_pts(np.array(box, float), extra, disp.shape)      # display pixels
             ddb = (d[:, 0].min(), d[:, 1].min(), d[:, 0].max(), d[:, 1].max())

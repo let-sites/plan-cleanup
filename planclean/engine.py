@@ -57,7 +57,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 2. text
     progress('Reading text')
-    words = ocr.read_words(elec, region, page.rotation)
+    words = ocr.read_words(elec, region, page.rotation)     # page-fixed tiles: the box drawn doesn't change a word
 
     # 3. walls (for turning symbols and telling wall lights from ceiling lights)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])

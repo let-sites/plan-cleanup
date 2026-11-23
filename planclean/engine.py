@@ -235,6 +235,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             hint_ends.setdefault(int(idx[i]), []).extend([tuple(piece[i]), tuple(piece[i + 1])])
         removed['symbol parts'] += int(drop.sum())
         return out
+    def full_circle(p):
+        """A closed path made only of curves: a burner or other round drawing, never a wire."""
+        it = p['items']
+        if len(it) < 2 or any(i[0] != 'c' for i in it): return False
+        a, b = it[0][1], it[-1][-1]
+        return math.hypot(a.x - b.x, a.y - b.y) < 0.2
     def smooth_dash(p):
         """A short dash of a curved wire: one open run of segments, end to end, bending gently.
         (Letter strokes left outside word boxes turn sharply or branch.)"""
@@ -279,7 +285,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if len(p['items']) >= 2 and max(r.width, r.height) < 9 and not any(i[0] == 'c' for i in p['items']) \
                     and not smooth_dash(p):
                 removed['loose glyphs'] += 1; continue
-        if rl == 'electrical':
+        if rl == 'electrical' and not full_circle(p):     # a circle that isn't a symbol (burner) is drawn as is
             for q in wiring.pieces_of(polylines(p)): wire_pieces += trim(q)
             continue
         if rl == 'misc' and len(p['items']) == 1 and p['items'][0][0] == 'l' and max(r.width, r.height) < 6 \
@@ -429,6 +435,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         bow = float(np.abs((P - P[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) if Lc > 1 else 0.0
         curved = bow >= max(1.5, 0.04 * Lc)
         closed = Lc < 0.3 * length                          # loops back on itself (range burners, circles)
+        # a run of plain straight strokes (one or two segments each), touching no symbol, is linework such as
+        # an appliance outline: a wire's dashes follow its curve with many small segments
+        def _loose(i, pt): return i < 0 or math.hypot(hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]) > 12
+        if _loose(ia, P[0]) and _loose(ib, P[-1]) and all(len(q) <= 3 for q in seq) and max(plen(q) for q in seq) > 6:
+            for q in seq: res.lines.append(('misc', [tx(*v) for v in q], False))
+            continue
         # a straight dashed run from one symbol to another is still a wire (cabinet lines don't end at symbols)
         OUTLETS = ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet')
         links = (ia >= 0 and ib >= 0 and ia != ib and length < 50 and (len(seq) <= 2 or dash_dot(seq))

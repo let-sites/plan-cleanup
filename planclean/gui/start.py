@@ -82,7 +82,7 @@ class StartDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('New cleanup'); self.settings = settings; self.open_settings = open_settings
         self.path = None; self.doc = None; self.sheet_index = 0
-        self.setAcceptDrops(True); self._overlay = DropOverlay(self)
+        self.setAcceptDrops(True)
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget(); outer.addWidget(self.stack)
 
@@ -91,10 +91,13 @@ class StartDialog(QDialog):
         t = QLabel('New cleanup'); t.setStyleSheet('font-size:26px;font-weight:700'); v.addWidget(t)
         sub = QLabel('Choose the builder\'s plan and who the builder is.'); sub.setProperty('kind', 'muted'); v.addWidget(sub)
         v.addWidget(_heading('1', 'Builder\'s plan (PDF or DWG)'))
-        drop = QFrame(); drop.setStyleSheet('QFrame{background:white;border:2px dashed #c9d6de;border-radius:10px}')
+        self.drop = drop = QFrame(); self._drop_style(False)
         dv = QVBoxLayout(drop); dv.setContentsMargins(20, 22, 20, 22)
+        self.name_lbl = QLabel(); self.name_lbl.setAlignment(Qt.AlignCenter); self.name_lbl.setWordWrap(True)
+        self.name_lbl.setStyleSheet('border:none;background:transparent;font-weight:700;font-size:17px'); self.name_lbl.hide()
+        dv.addWidget(self.name_lbl)
         self.file_btn = _big('Choose plan file…', primary=True); self.file_btn.clicked.connect(self.choose_file)
-        self.file_lbl = QLabel('or drag the file here'); self.file_lbl.setAlignment(Qt.AlignCenter); self.file_lbl.setStyleSheet('border:none;color:#6b7a86')
+        self.file_lbl = QLabel('or drag the file here'); self.file_lbl.setAlignment(Qt.AlignCenter); self.file_lbl.setStyleSheet('border:none;background:transparent;color:#6b7a86')
         row = QHBoxLayout(); row.addStretch(); row.addWidget(self.file_btn); row.addStretch(); dv.addLayout(row); dv.addWidget(self.file_lbl)
         v.addWidget(drop)
         v.addWidget(_heading('2', 'Builder'))
@@ -176,19 +179,30 @@ class StartDialog(QDialog):
         f, _ = QFileDialog.getOpenFileName(self, 'Choose the builder\'s plan', '', 'Plans (*.pdf *.dwg)')
         if f: self.set_file(f)
 
+    def _drop_style(self, active):
+        """The dotted drop box turns blue while a plan is dragged over the window."""
+        if active:
+            self.drop.setStyleSheet('QFrame{background:rgba(74,144,184,60);border:2px dashed #4a90b8;border-radius:10px}')
+        else:
+            self.drop.setStyleSheet('QFrame{background:white;border:2px dashed #c9d6de;border-radius:10px}')
+
     def dragEnterEvent(self, e):
-        if _plan_url(e.mimeData()): e.acceptProposedAction(); self._overlay.show_over()
+        if _plan_url(e.mimeData()): e.acceptProposedAction(); self._drop_style(True)
 
     def dragLeaveEvent(self, e):
-        self._overlay.hide()
+        self._drop_style(False)
 
     def dropEvent(self, e):
-        self._overlay.hide()
+        self._drop_style(False)
         f = _plan_url(e.mimeData())
         if f: self.set_file(f)
 
     def set_file(self, f):
-        self.path = f; self.file_lbl.setText(Path(f).name); self.file_lbl.setStyleSheet('border:none;font-weight:600;font-size:15px')
+        self.path = f
+        # the file name takes the top spot; the button shrinks to "Replace file…" underneath (one plan at a time)
+        self.name_lbl.setText(Path(f).name); self.name_lbl.show(); self.file_lbl.hide()
+        self.file_btn.setText('Replace file…'); self.file_btn.setProperty('kind', 'big'); self.file_btn.setMinimumHeight(28)
+        self.file_btn.style().unpolish(self.file_btn); self.file_btn.style().polish(self.file_btn)
         self.sheets.clear(); self._timer.stop(); self.doc = None
         try:
             with open(f, 'rb') as fh: is_pdf = fh.read(5) == b'%PDF-'

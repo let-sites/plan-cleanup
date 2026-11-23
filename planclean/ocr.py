@@ -31,12 +31,36 @@ def _unrotate_pts(b, rot, shape_before):
 
 SNAP = 128      # points (512 px at scale 4, a whole number of the text finder's 32 px steps)
 
+def _disp(x, y, rot):
+    """Page point -> display orientation (up to a shift, which nothing here depends on)."""
+    return {90: (-y, x), 180: (-x, -y), 270: (y, -x)}.get(rot % 360, (x, y))
+
 def read_words(paths, region, page_rotation=0, scale=4):
-    # The text finder is sensitive to the image's edges and size, so read a page-fixed area: the box
-    # snapped outward to a 128 pt grid from the page origin. Boxes drawn a little differently around
-    # the same plan then read the same image, and a word reads the same however the box was drawn.
-    region = (math.floor(region[0] / SNAP) * SNAP, math.floor(region[1] / SNAP) * SNAP,
-              math.ceil(region[2] / SNAP) * SNAP, math.ceil(region[3] / SNAP) * SNAP)
+    """The text finder is sensitive to the image's edges and size, so the same word can read
+    differently (or not at all) depending on how the plan box was drawn. Read two page-fixed areas,
+    the box snapped outward to a 128 pt page grid and that area grown by 64 pt, and keep the better
+    reading of each word: boxes drawn a little differently read the same images, and a word one
+    reading misses the other usually finds."""
+    snap = (math.floor(region[0] / SNAP) * SNAP, math.floor(region[1] / SNAP) * SNAP,
+            math.ceil(region[2] / SNAP) * SNAP, math.ceil(region[3] / SNAP) * SNAP)
+    words = _read_area(paths, snap, page_rotation, scale)
+    grown = (snap[0] - 64, snap[1] - 64, snap[2] + 64, snap[3] + 64)
+    for w in _read_area(paths, grown, page_rotation, scale):
+        same = [v for v in words if _overlap(v['bb'], w['bb']) > 0.4]
+        if not same: words.append(w)
+        elif w['score'] > max(v['score'] for v in same) + 0.05:
+            for v in same: words.remove(v)
+            words.append(w)
+    words = [w for w in words if region[0] <= w['cx'] <= region[2] and region[1] <= w['cy'] <= region[3]]
+    return merge_same_line(words)
+
+def _overlap(a, b):
+    """Intersection over the smaller box."""
+    iw = min(a[2], b[2]) - max(a[0], b[0]); ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0: return 0.0
+    return iw * ih / max(1e-6, min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])))
+
+def _read_area(paths, region, page_rotation, scale):
     W, H = round((region[2] - region[0]) * scale), round((region[3] - region[1]) * scale)
     native = 255 - raster(paths, region, scale)[:H, :W]
     r0 = _ROT.get(page_rotation % 360)
@@ -47,12 +71,14 @@ def read_words(paths, region, page_rotation=0, scale=4):
         res, _ = engine()(cv2.cvtColor(im, cv2.COLOR_GRAY2BGR))
         for box, t, sc in (res or []):
             d = _unrotate_pts(np.array(box, float), extra, disp.shape)      # display pixels
-            n = _unrotate_pts(d, r0, native.shape)                           # native pixels
-            dbb = (d[:, 0].min() / scale, d[:, 1].min() / scale, d[:, 0].max() / scale, d[:, 1].max() / scale)
-            vert = (dbb[3] - dbb[1]) > (dbb[2] - dbb[0])
+            ddb = (d[:, 0].min(), d[:, 1].min(), d[:, 0].max(), d[:, 1].max())
+            vert = (ddb[3] - ddb[1]) > (ddb[2] - ddb[0])
             if (extra is None) == vert: continue
+            n = _unrotate_pts(d, r0, native.shape)                           # native pixels
             xs = n[:, 0] / scale + region[0]; ys = n[:, 1] / scale + region[1]
             bb = (xs.min(), ys.min(), xs.max(), ys.max())
+            q = np.array([_disp(x, y, page_rotation) for x, y in ((bb[0], bb[1]), (bb[2], bb[3]))])
+            dbb = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())   # display points, page-fixed
             cx, cy = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
             dup = [w for w in words if abs(cx - w['cx']) < 3 and abs(cy - w['cy']) < 3]
             if dup:
@@ -60,7 +86,7 @@ def read_words(paths, region, page_rotation=0, scale=4):
                 else: continue
             words.append(dict(text=t.strip(), n=norm(t), bb=bb, dbb=dbb, cx=cx, cy=cy, score=float(sc),
                               size=min(dbb[2] - dbb[0], dbb[3] - dbb[1]), vert=vert))
-    return merge_same_line(words)
+    return words
 
 def _union(a, b):
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))

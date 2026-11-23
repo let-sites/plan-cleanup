@@ -519,7 +519,7 @@ class MainWindow(QMainWindow):
         px_per_in = self.view_px_per_inch()
         for t in self.result.texts:
             x, y = self._view_pt(t.x, t.y)
-            h_in = self.settings.text_height_room if t.kind == 'room' else self.settings.text_height_note
+            h_in = self.settings.text_height_room if t.kind in ('room', 'title') else self.settings.text_height_note
             f = QFont('Arial'); f.setPixelSize(max(2, int(round(h_in * px_per_in / 0.72))))
             it = self.view.scene_.addSimpleText('\n'.join(t.lines), f)
             it.setBrush(QColor('#d00000' if t.review else '#000000'))

@@ -18,7 +18,7 @@ class Sym:
 
 @dataclass
 class Text:
-    kind: str                # 'room' | 'note'
+    kind: str                # 'room' | 'note' | 'title' (the sheet's title)
     lines: list
     x: float
     y: float

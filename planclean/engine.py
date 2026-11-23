@@ -58,6 +58,17 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # 2. text
     progress('Reading text')
     words = ocr.read_words(elec, region, page.rotation)     # page-fixed tiles: the box drawn doesn't change a word
+    # Sheet titles ('ELECTRICAL PLAN - OPT. 4TH CAR GARAGE') are often lettered with the wall pen: read big
+    # lettering from short open strokes of the other pens too, and turn it into a clean title.
+    letters = [p for p in pl if role(p) in ('wall', 'misc', 'casework') and not is_filled(p)
+               and max(p['rect'].width, p['rect'].height) < 30]
+    titles = []
+    if len(letters) >= 20:
+        # big lettering reads best small (and whole: a title can be longer than a reading tile)
+        for w in sorted(ocr.merge_same_line(ocr._read_area(letters, region, page.rotation, 1.5)), key=lambda w: -len(w['n'])):
+            if w['size'] >= 12 and len(re.sub(r'[^A-Z0-9]', '', w['n'])) >= 6 and w['score'] >= 0.6 \
+                    and not any(ocr._overlap(w['bb'], t['bb']) > 0.5 for t in titles):
+                titles.append(w)
 
     # 3. walls (for turning symbols and telling wall lights from ceiling lights)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
@@ -300,9 +311,22 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         return turn < math.radians(50)
     wire_pieces = []                 # connected polylines of the kept electrical paths
     kept_verbatim = set()
+    def title_box(t):          # a letter's width past each end: a trailing dash, a dropped end letter
+        b = t['bb']; e = 1.2 * t['size']
+        return (b[0] - 2 - e, b[1] - 2, b[2] + 2 + e, b[3] + 2) if b[2] - b[0] >= b[3] - b[1] else (b[0] - 2, b[1] - 2 - e, b[2] + 2, b[3] + 2 + e)
+    in_title = contained([title_box(t) for t in titles])
+    def underline(r):
+        """A long thin bar running along a title, just beside it."""
+        for t in titles:
+            b = t['bb']; tw, th = b[2] - b[0], b[3] - b[1]
+            if tw >= th and r.height < 5 and r.width > 0.5 * tw and r.x0 < b[2] and r.x1 > b[0] and -14 < r.y0 - b[3] < 14 + th: return True
+            if th > tw and r.width < 5 and r.height > 0.5 * th and r.y0 < b[3] and r.y1 > b[1] and -14 - tw < r.x0 - b[0] < 14 + tw: return True
+        return False
     for k, p in enumerate(pl):
         rl = role(p); r = p['rect']
         if rl == 'remove': removed['removed pens'] += 1; continue
+        if titles and rl != 'electrical' and (in_title[k] or underline(r)):
+            removed['text strokes'] += 1; continue           # the builder's sheet title: written as clean text
         if in_hit[k] and is_filled(p) and max(r.width, r.height) < 25:
             removed['symbol parts'] += 1; continue           # a filled symbol (smoke detector dot), whatever its pen
         if rl in ('electrical', 'misc', 'opening'):
@@ -612,6 +636,31 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for w in notes:
         X, Y = tx(w['cx'], w['cy'])
         lines = [' '.join(NOTE_WORDS.get(t, t) for t in re.sub(r'\b(\d{3}) ?Y\b', r'\1V', ln).split()) for ln in w['lines']]   # 220Y -> 220V
+        def scale(ln):
+            m = re.match(r"SCALE:? *([0-9IO]+)/([0-9IO]+)", ln)
+            if not m: return ln
+            a, b = (re.sub('[IO]', lambda c: '1' if c.group() == 'I' else '0', g) for g in m.groups())
+            return f'SCALE: {a}/{b}" = 1\'-0"'                  # 'SCALE I/4 I-O' -> SCALE: 1/4" = 1'-0"
+        lines = [scale(ln) for ln in lines]
         res.texts.append(Text('note', lines, X, Y, review='Builder note kept: check it' if w['score'] < 0.7 else ''))
+    if titles:
+        vocab = {t for k in profile.room_names for t in k.split()} | {'ELECTRICAL', 'PLAN', 'OPT.', 'OPTIONAL', 'CAR', 'BAY', 'SCALE', 'FLOOR', 'LIGHTING'}
+        def split(tok):
+            """'ELECTRICALPLAN-' -> 'ELECTRICAL PLAN -' when it is known words run together."""
+            core = tok.strip('-'); best = {0: []}
+            for i in range(1, len(core) + 1):
+                for j in range(max(0, i - 12), i):
+                    if j in best and core[j:i] in vocab and (i not in best or len(best[j]) + 1 < len(best[i])): best[i] = best[j] + [core[j:i]]
+            return ' '.join(best[len(core)]) + (' -' if tok.endswith('-') else '') if len(core) in best and len(best[len(core)]) > 1 else tok
+        def fix(tok):
+            if tok in vocab or len(tok) < 4: return tok
+            t2 = split(tok)
+            if t2 != tok: return t2
+            if not tok.isalpha(): return tok
+            m = difflib.get_close_matches(tok, list(vocab), n=1, cutoff=0.8); return m[0] if m else tok   # 'GARAGI' -> GARAGE
+        titles.sort(key=lambda w: (w['dbb'][1], w['dbb'][0]))      # top line first, as the sheet reads
+        lines = [' '.join(fix(t) for t in re.sub(r'(OPT\.)(?=\w)', r'\1 ', w['n']).split()) for w in titles]
+        cx = sum(w['cx'] for w in titles) / len(titles); cy = sum(w['cy'] for w in titles) / len(titles)
+        X, Y = tx(cx, cy); res.texts.append(Text('title', lines, X, Y))
     res.stats = dict(removed=removed, words=len(words), symbols=len(hits))
     return res

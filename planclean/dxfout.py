@@ -162,7 +162,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         if s.review:
             msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})
     for t in res.texts:
-        if t.kind == 'room':
+        if t.kind in ('room', 'title'):
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_room, 'color': 7,
                                                            'insert': (t.x, t.y), 'attachment_point': 5})
         else:

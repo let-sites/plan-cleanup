@@ -163,6 +163,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             short = len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 5
             if short and any(math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < 26 for h in hits):
                 res.dropped_labels.append(n); continue
+            if len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 1:
+                res.dropped_labels.append(n); continue       # a lone letter is a stray mark, not a note
             notes.append(w)
     notes = ocr.stack_lines(notes)
 
@@ -490,7 +492,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             dev = max(float(np.hypot(curve[:, 0] - x, curve[:, 1] - y).min()) for x, y in mid[::max(1, len(mid) // 40)])
             return f if (dev <= max(5.0, 0.15 * L) or forced) else None
         forced = to_note(ia, P[0]) or to_note(ib, P[-1])
-        if ia < 0 and ib < 0 and not forced and length < 60:
+        def _attached(i, pt, inward):
+            """The end reaches the symbol: right at it, or within reach and heading straight for it."""
+            if i < 0: return False
+            v = np.array([hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]]); dd = float(np.hypot(*v))
+            if dd <= 12: return True
+            out = -inward / (float(np.hypot(*inward)) or 1.0)
+            return float(out @ v) / dd > 0.8
+        if not _attached(ia, P[0], P[min(3, len(P) - 1)] - P[0]) and not _attached(ib, P[-1], P[max(-4, -len(P))] - P[-1]) \
+                and not forced and length < 60:
             for q in seq: res.lines.append(('misc', [tx(*v) for v in q], False))
             continue                                         # a wire always runs to a symbol or a note
         hA = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else None

@@ -207,7 +207,7 @@ class MainWindow(QMainWindow):
                                'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
         self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
-        self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(lambda on: self.orig_btn.setChecked(on) if self.orig_btn.isChecked() != on else self.draw_result()); v.addWidget(self.show_orig)
+        self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(lambda on: self.orig_btn.setChecked(on) if self.orig_btn.isChecked() != on else self.draw_result()); self.show_orig.hide()   # state only: the Show original (O) button is the control
         v.addWidget(QLabel('<b>Needs a look</b>'))
         self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); v.addWidget(self.review, 3)
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])

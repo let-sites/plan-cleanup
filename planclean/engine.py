@@ -34,6 +34,8 @@ def guess_roles(paths, electrical_pens=()):
         else: roles[k] = 'misc'
     return roles
 
+TITLE_H = 9.0          # inches: the sheet title's text height (Settings.text_height_title)
+
 def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: None) -> Result:
     K = profile.inches_per_pt
     x0, y0 = region[0], region[1]
@@ -679,10 +681,30 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         lines = [scale(rating_text(ln) if re.search(r'2[24]0 ?[VY]', ln) else ln) for ln in lines]
         lines = [re.sub(r'\((I|L|l)\)', '(1)', ' '.join(fix_word(t) for t in ln.split())) for ln in lines]   # '(I)' is (1)
         res.texts.append(Text('note', lines, X, Y, review='Builder note kept: check it' if w['score'] < 0.7 else ''))
+    # a note written level over a symbol (a rating the builder wrote sideways along a wall): move it clear
+    NOTE_H = 3.0                                             # inches, about the usual note height
+    syms = [(s.x, s.y) for s in res.symbols]
+    for t in res.texts:
+        if t.kind != 'note': continue
+        hw = 0.6 * NOTE_H * max(len(ln) for ln in t.lines) / 2; hh = 0.85 * NOTE_H * len(t.lines)
+        hit = [(x, y) for x, y in syms if abs(x - t.x) < hw + 4 and abs(y - t.y) < hh + 4]
+        if hit:
+            x, y = min(hit, key=lambda q: abs(q[1] - t.y))
+            t.y = y + (hh + 8) * (1 if t.y > y else -1)
     if titles:
         titles.sort(key=lambda w: (w['dbb'][1], w['dbb'][0]))      # top line first, as the sheet reads
         lines = [title_text(w['n']) for w in titles]
-        cx = sum(w['cx'] for w in titles) / len(titles); cy = sum(w['cy'] for w in titles) / len(titles)
-        X, Y = tx(cx, cy); res.texts.append(Text('title', lines, X, Y))
+        # the title (and the scale line) go centred under the plan, as on a finished sheet
+        pts = [v for _, q, _ in res.lines for v in q] + syms
+        xs = [v[0] for v in pts]; ys = [v[1] for v in pts]
+        if xs:
+            X = (min(xs) + max(xs)) / 2; top = min(ys) - 18.0
+        else:
+            X, top = tx(sum(w['cx'] for w in titles) / len(titles), sum(w['cy'] for w in titles) / len(titles))
+        th = TITLE_H * 1.4 * len(lines)
+        res.texts.append(Text('title', lines, X, top - th / 2))
+        for t in res.texts:
+            if t.kind == 'note' and t.lines[0].startswith('SCALE'):
+                t.x, t.y = X, top - th - 8.0
     res.stats = dict(removed=removed, words=len(words), symbols=len(hits))
     return res

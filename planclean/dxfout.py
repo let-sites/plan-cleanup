@@ -108,7 +108,7 @@ def _placeholders(doc):
         b = doc.blocks.new('UNMAPPED'); b.add_circle((0, 0), 3); b.add_line((-3, 0), (3, 0)); b.add_line((0, -3), (0, 3))
 
 def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_note=3.0,
-              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes'):
+              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes', text_title=9.0):
     out = ezdxf.new('R2018', setup=True)
     out.header['$INSUNITS'] = 1  # inches
     for name, col in LAYERS:
@@ -163,7 +163,8 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})
     for t in res.texts:
         if t.kind in ('room', 'title'):
-            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_room, 'color': 7,
+            msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style,
+                                                           'char_height': text_title if t.kind == 'title' else text_room, 'color': 7,
                                                            'insert': (t.x, t.y), 'attachment_point': 5})
         else:
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_note, 'color': 7,

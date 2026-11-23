@@ -97,6 +97,7 @@ class Settings:
     oda_path: str = ""             # ODA File Converter executable (auto-detected when empty)
     text_height_room: float = 5.0  # inches
     text_height_note: float = 3.0
+    text_height_title: float = 9.0  # the sheet / option title
     text_style: str = "Notes"      # Arial
     text_layer: str = "$Circuits"  # room names and kept notes
     symbol_layer: str = "$Standard"

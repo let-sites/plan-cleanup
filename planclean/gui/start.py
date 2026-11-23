@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QImage, QPixmap, QIcon, QFont
 from PySide6.QtWidgets import (QStackedWidget, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QListWidget,
                                QListWidgetItem, QFileDialog, QInputDialog, QListView, QFrame, QRadioButton, QCheckBox, QButtonGroup,
-                               QDialogButtonBox)
+                               QDialogButtonBox, QMessageBox)
 from planclean.profile import Profile, safe_name
 from planclean import oda
 
@@ -85,6 +85,64 @@ def edit_builder_settings(settings, name, parent=None):
     if BuilderSettingsDialog(p, parent).exec() != QDialog.Accepted: return False
     p.save(path); return True
 
+class ManageBuildersDialog(QDialog):
+    """Every saved builder: archive the ones you're done with (hidden, kept), restore them, or delete them."""
+    def __init__(self, settings, parent=None):
+        super().__init__(parent); self.settings = settings
+        self.setWindowTitle('Builders'); self.resize(520, 520)
+        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 16)
+        t = QLabel('Builders'); t.setStyleSheet('font-size:18px;font-weight:700'); v.addWidget(t)
+        v.addWidget(QLabel('<b>In use</b>'))
+        self.active = QListWidget(); self.active.setSelectionMode(QListWidget.ExtendedSelection); v.addWidget(self.active, 2)
+        row = QHBoxLayout()
+        arch = QPushButton('Archive'); arch.setToolTip('Hide from the builder list. Nothing is lost; restore it any time.')
+        dele = QPushButton('Delete…'); dele.setToolTip('Delete the builder and everything taught for it')
+        arch.clicked.connect(self.archive); dele.clicked.connect(lambda: self.delete(self.active, self.settings.profiles_dir()))
+        row.addWidget(arch); row.addWidget(dele); row.addStretch(); v.addLayout(row)
+        v.addWidget(QLabel('<b>Archived</b>'))
+        self.archived = QListWidget(); self.archived.setSelectionMode(QListWidget.ExtendedSelection); v.addWidget(self.archived, 1)
+        row = QHBoxLayout()
+        rest = QPushButton('Restore'); rest.clicked.connect(self.restore)
+        dele2 = QPushButton('Delete…'); dele2.clicked.connect(lambda: self.delete(self.archived, self.archive_dir()))
+        row.addWidget(rest); row.addWidget(dele2); row.addStretch(); v.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(self.reject); bb.accepted.connect(self.accept)
+        v.addSpacing(8); v.addWidget(bb)
+        self.refresh()
+
+    def archive_dir(self):
+        d = self.settings.profiles_dir() / 'Archived'; d.mkdir(exist_ok=True); return d
+
+    def refresh(self):
+        self.active.clear(); self.archived.clear()
+        for n in self.settings.list_profiles(): self.active.addItem(n)
+        for f in sorted(self.archive_dir().glob('*.json')): self.archived.addItem(f.stem)
+
+    def _move(self, lst, src, dst):
+        for it in lst.selectedItems():
+            f = src / (it.text() + '.json'); target = dst / f.name
+            if target.exists():
+                QMessageBox.warning(self, 'Builders', f'There is already a builder called "{it.text()}" there.'); continue
+            f.replace(target)
+        self.refresh()
+
+    def archive(self): self._move(self.active, self.settings.profiles_dir(), self.archive_dir())
+    def restore(self): self._move(self.archived, self.archive_dir(), self.settings.profiles_dir())
+
+    def delete(self, lst, folder):
+        names = [it.text() for it in lst.selectedItems()]
+        if not names: return
+        msg = ('Delete ' + (f'"{names[0]}"' if len(names) == 1 else f'these {len(names)} builders') +
+               ' and everything taught for ' + ('it' if len(names) == 1 else 'them') + '? This can\'t be undone.\n\n'
+               'To keep a builder but hide it from the list, use Archive instead.')
+        box = QMessageBox(QMessageBox.Warning, 'Delete builder', msg, QMessageBox.Cancel, self)
+        yes = box.addButton('Delete', QMessageBox.DestructiveRole); box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not yes: return
+        for n in names:
+            try: (folder / (n + '.json')).unlink()
+            except OSError: pass
+        self.refresh()
+
 def _heading(n, text):
     l = QLabel(f'<span style="color:#4a90b8;font-weight:700">{n}</span>&nbsp;&nbsp;<b>{text}</b>')
     l.setStyleSheet('font-size:16px;margin-top:12px'); return l
@@ -121,7 +179,9 @@ class StartDialog(QDialog):
         self.builder.currentIndexChanged.connect(self.update_state)
         nb = _big('New builder…'); nb.clicked.connect(self.new_builder)
         self.bset = _big('Builder settings…'); self.bset.clicked.connect(self.builder_settings)
-        row.addWidget(self.builder); row.addWidget(nb); row.addWidget(self.bset); row.addStretch(); v.addLayout(row)
+        mb = _big('Builders…'); mb.setToolTip('See every builder; archive or delete ones you no longer need')
+        mb.clicked.connect(self.manage_builders)
+        row.addWidget(self.builder); row.addWidget(nb); row.addWidget(self.bset); row.addWidget(mb); row.addStretch(); v.addLayout(row)
         self.fill_builders()
         v.addStretch()
         self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setTextFormat(Qt.RichText)
@@ -175,6 +235,11 @@ class StartDialog(QDialog):
         for n in self.settings.list_profiles(): self.builder.addItem(n)
         if select and self.builder.findText(select) > 0: self.builder.setCurrentIndex(self.builder.findText(select))
         self.builder.blockSignals(False); self.update_state()
+
+    def manage_builders(self):
+        keep = self.builder_name()
+        ManageBuildersDialog(self.settings, self).exec()
+        self.fill_builders(keep)
 
     def new_builder(self):
         name, ok = QInputDialog.getText(self, 'New builder', 'Builder name:')

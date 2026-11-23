@@ -1,7 +1,8 @@
 """The symbol types the tool knows about and their default blocks."""
 # key: (label shown to the user, default block in your library, turned toward the wall?)
 SYMBOL_TYPES = {
-    "outlet":         ("Outlet (any: standard, GFI, WP, 220)", "standard_outlet", True),
+    "outlet":         ("Outlet (standard, GFI, WP)",          "standard_outlet", True),
+    "outlet_240":     ("220V / 240V outlet",                   "standard_240v", True),
     "switch":         ("Switch (single or 3-way)",            "standard_switch", True),
     "dimmer":         ("Dimmer switch",                        "standard_dimmerswitch_lisp", True),
     "ceiling_light":  ("Ceiling light",                        "standard_ceiling_light_prewire", False),

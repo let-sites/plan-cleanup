@@ -109,7 +109,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         h['mods'] = []
         for w in words:
             if math.hypot(w['cx'] - h['x'], w['cy'] - h['y']) < 16:
-                for m in ('GFI', 'WP', 'DISK', '220', 'CLG'):
+                for m in ('GFI', 'WP', 'DISK', '220', '240', 'CLG'):
                     if m in w['n'].replace(' ', ''):
                         h['mods'].append(m); used.add(id(w))
         if h['cls'] in ('ceiling_light', 'wall_light'):
@@ -117,6 +117,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             h['cls'] = 'wall_light' if d < profile.wall_light_max_dist else 'ceiling_light'
         if h['cls'] == 'ceiling_light' and 'DISK' in h['mods']:
             h['cls'] = 'disk_light'
+        # A wall symbol labelled 220V is a 220/240V outlet (its three lines can read as a wall light).
+        if h['cls'] in ('outlet', 'wall_light', 'ceiling_light') and ('220' in h['mods'] or '240' in h['mods']):
+            h['cls'] = 'outlet_240'
     # "BLK & WIRE FOR CLG. FAN" -> the nearest ceiling light becomes a fan
     for w in words:
         if 'FAN' in w['n'] and ('CLG' in w['n'] or 'WIRE' in w['n']):

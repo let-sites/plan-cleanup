@@ -31,7 +31,7 @@ def _unrotate_pts(b, rot, shape_before):
     if rot == cv2.ROTATE_90_CLOCKWISE: return np.c_[b[:, 1], H - 1 - b[:, 0]]
     if rot == cv2.ROTATE_180: return np.c_[W - 1 - b[:, 0], H - 1 - b[:, 1]]
 
-TILE, PAD = 512, 160      # points: page-fixed reading tiles, and how far past its edges each tile reads
+TILE, PAD = 512, 128      # points: page-fixed reading tiles, and how far past its edges each tile reads
 
 def _disp(x, y, rot):
     """Page point -> display orientation (up to a shift, which nothing here depends on)."""
@@ -41,16 +41,8 @@ def read_words(paths, region, page_rotation=0, scale=4):
     """Read the text in region. The text finder is sensitive to the image's edges and size, so the
     same word could read differently (or not at all) depending on how the plan box was drawn. So the
     sheet is read in fixed tiles measured from the page origin: away from the box's edges a word's
-    reading doesn't depend on the box. Two tilings, the second shifted half a tile, and the better
-    reading of each word is kept."""
-    words = _read_tiles(paths, region, page_rotation, scale, 0)
-    for w in _read_tiles(paths, region, page_rotation, scale, TILE // 2):
-        same = [v for v in words if _overlap(v['bb'], w['bb']) > 0.4]
-        if not same: words.append(w)
-        elif w['score'] > max(v['score'] for v in same) + 0.02:
-            for v in same: words.remove(v)
-            words.append(w)
-    return merge_same_line(words)
+    reading doesn't depend on the box."""
+    return merge_same_line(_read_tiles(paths, region, page_rotation, scale, 0))
 
 def _read_tiles(paths, region, page_rotation, scale, shift):
     words = []

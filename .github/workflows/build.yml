@@ -64,6 +64,7 @@ jobs:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.*
           if-no-files-found: error
+          retention-days: 1
       - name: Read version
         id: ver
         shell: bash

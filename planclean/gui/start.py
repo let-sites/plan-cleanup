@@ -1,5 +1,6 @@
 """The 'New cleanup' window: pick the builder's plan, the builder, and the sheet."""
 from __future__ import annotations
+import re
 from pathlib import Path
 import pymupdf
 from PySide6.QtCore import Qt, QSize, QTimer
@@ -54,12 +55,27 @@ class BuilderSettingsDialog(QDialog):
         v.addWidget(QLabel('<b>Other symbols</b>'))
         self.det = QCheckBox('Smoke and smoke/CO detectors'); self.det.setChecked(profile.detectors); v.addWidget(self.det)
         self.fan = QCheckBox('Exhaust fans (and their wires)'); self.fan.setChecked(profile.exhaust_fans); v.addWidget(self.fan)
+        # notes deleted during review are left off from then on: list them so a mistake can be undone
+        from planclean.profile import DEFAULT_DROP
+        self.learned = [p for p in profile.drop_labels if p not in DEFAULT_DROP]
+        if self.learned:
+            v.addWidget(QLabel('<b>Builder notes left off</b> (learned when you deleted them)'))
+            self.drop_list = QListWidget(); self.drop_list.setMaximumHeight(140)
+            for pat in self.learned:
+                it = QListWidgetItem(re.sub(r'\\(.)', r'\1', pat.strip('^$'))); it.setData(Qt.UserRole, pat); self.drop_list.addItem(it)
+            v.addWidget(self.drop_list)
+            rm = QPushButton('Show it again'); rm.setToolTip('Stop leaving the selected note off')
+            rm.clicked.connect(lambda: [self.drop_list.takeItem(self.drop_list.row(i)) for i in self.drop_list.selectedItems()])
+            v.addWidget(rm, 0, Qt.AlignLeft)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addSpacing(8); v.addWidget(bb)
 
     def accept(self):
         self.profile.outlets = OUTLET_CHOICES[max(self.out_group.checkedId(), 0)][0]
         self.profile.detectors = self.det.isChecked(); self.profile.exhaust_fans = self.fan.isChecked()
+        if self.learned:
+            keep = {self.drop_list.item(i).data(Qt.UserRole) for i in range(self.drop_list.count())}
+            self.profile.drop_labels = [p for p in self.profile.drop_labels if p not in self.learned or p in keep]
         super().accept()
 
 def edit_builder_settings(settings, name, parent=None):

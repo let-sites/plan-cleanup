@@ -37,6 +37,7 @@ class SymbolExample:
     rotations: list          # 90 degree turns to try
     template: str            # base64 PNG at Profile.TEMPLATE_SCALE px/pt
     threshold: float = 0.6
+    learned: bool = False    # saved from the review (Change type / Looks right), not taught
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     def image(self):
@@ -63,7 +64,7 @@ class Profile:
     @staticmethod
     def load(path):
         d = json.loads(Path(path).read_text())
-        d['symbols'] = [SymbolExample(**s) for s in d.get('symbols', [])]
+        d['symbols'] = [SymbolExample(**{k: v for k, v in s.items() if k in SymbolExample.__dataclass_fields__}) for s in d.get('symbols', [])]
         for ex in d['symbols']:
             if ex.cls == 'jbox': ex.cls = 'ceiling_light'     # the J-box type was retired
         p = Profile(**{k: v for k, v in d.items() if k in Profile.__dataclass_fields__})

@@ -410,6 +410,7 @@ class MainWindow(QMainWindow):
             for r in rows:
                 eid = self.examples.item(r, 0).data(Qt.UserRole)
                 self.profile.symbols = [e for e in self.profile.symbols if e.id != eid]; self.examples.removeRow(r)
+            if rows and self.profile: self._save_quietly()
 
     # ---------- clean + review
     def run_clean(self):
@@ -592,19 +593,54 @@ class MainWindow(QMainWindow):
     def change_type(self, i):
         s = getattr(self, '_sel', None)
         if s is None or not hasattr(s, 'cls'): return
-        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._after_review_change()
+        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._learn_symbol(s); self._after_review_change()
 
     def delete_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
         if hasattr(s, 'cls'): self.result.symbols.remove(s)
-        elif s in self.result.texts: self.result.texts.remove(s)
+        elif s in self.result.texts:
+            self.result.texts.remove(s)
+            if s.kind == 'note': self._learn_drop(s)
         self._sel = None; self._after_review_change()
 
     def ok_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
+        if hasattr(s, 'cls') and s.review: self._learn_symbol(s)     # it was unsure: now it knows
         s.review = ''; self._after_review_change()
+
+    # ---------- learning from the review (saved to the builder; undo on the Teach tab / Builder settings)
+    def _learn_symbol(self, s):
+        """Save the builder's drawing under a reviewed symbol as an example of its (corrected) type."""
+        if not (self.profile and self.sheet and self.sheet.kind == 'pdf' and self.region and self.result and self.result.to_page):
+            return
+        try:
+            if self.teacher is None: self.teacher = Teacher(self.sheet.page, self.region, self.profile)
+            x, y = self.result.to_page(s.x, s.y)
+            ex, _ = self.teacher.example_at(x, y, s.cls)
+            ex.learned = True
+            self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly()
+            self.statusBar().showMessage(f'Learned: this {sym_label(s.cls).split(" (")[0].lower()} is saved for {self.profile.name}. '
+                                         'Remove it on the Teach tab if that was a mistake.', 8000)
+        except Exception as e:                         # learning is a bonus: never block the review
+            self.statusBar().showMessage(f'Could not learn from that symbol ({e}).', 5000)
+
+    def _learn_drop(self, t):
+        """A deleted builder note: leave the same wording off this builder's future plans."""
+        if not self.profile: return
+        import re as _re
+        # one-line notes only: a line of a longer note ('TO LIGHT' / 'ABOVE') is wording other notes share
+        if len(t.lines) != 1 or len(_re.sub(r'[^A-Z0-9]', '', t.lines[0].upper())) < 2: return
+        new = [p for p in [r'^' + _re.escape(t.lines[0].strip()) + r'$'] if p not in self.profile.drop_labels]
+        if not new: return
+        self.profile.drop_labels += new; self._save_quietly()
+        self.statusBar().showMessage(f'Learned: "{" / ".join(t.lines)}" will be left off {self.profile.name} plans. '
+                                     'Undo in Builder settings.', 8000)
+
+    def _save_quietly(self):
+        try: self.profile.save(self.settings.profile_path(self.profile.name))
+        except Exception: pass
 
     def _after_review_change(self):
         """Redraw, then move straight on to the next item on the list."""
@@ -685,7 +721,7 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv); app.setApplicationName('Plan Cleanup')
     from . import style; style.apply(app)
-    w = MainWindow(); w.show()
+    w = MainWindow(); w.showMaximized()          # fill the screen (not macOS full-screen mode)
     if len(sys.argv) > 1: w.load(sys.argv[1])
     else: QTimer.singleShot(200, w.new_cleanup)    # start with the New cleanup window
     sys.exit(app.exec())

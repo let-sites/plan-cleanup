@@ -238,6 +238,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             bw, bh = b[2] - b[0], b[3] - b[1]
             if bw >= bh: ex = 2 * bw / nch
             else: ey = 2 * bh / nch
+        if nch <= 3 and w['score'] < 0.7 and id(w) not in room_ids:
+            b, pad, ex, ey = (1e9, 1e9, 1e9, 1e9), 0.0, 0.0, 0.0   # a doubtful 2-3 letter read (switch '$$' as 'DS') erases nothing
         word_boxes.append((b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
         word_boxes_ext.append((b[0] - pad - ex, b[1] - pad - ey, b[2] + pad + ex, b[3] + pad + ey))
     in_hit, in_word, in_word_ext = contained(hit_boxes), contained(word_boxes), contained(word_boxes_ext)
@@ -539,8 +541,13 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         hA = np.array([hits[ia]['x'], hits[ia]['y']]) if ia >= 0 else None
         hB = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else None
         f = None
-        for A, B in ((hA, hB), (hA, None), (None, hB), (None, None)):
+        tries = ((hA, hB), (hA, None), (None, hB), (None, None))
+        if hA is not None and hB is not None and np.hypot(*(P[0] - hA)) <= 12 and np.hypot(*(P[-1] - hB)) <= 12:
+            tries = tries[:1]       # both ends right at a symbol: the wire runs symbol to symbol, never stops short
+        for A, B in tries:
             f = redraw(A if A is not None else P[0], B if B is not None else P[-1])
+            if f and f[0] == 'arc' and A is not None and B is not None and abs((f[5] - f[4]) % 360) > 200:
+                f = None            # a loop round the symbols: drawn as at most a half circle below
             if f: break
         if f is None and hA is not None and hB is not None:
             # the builder looped or wiggled between two symbols: still one clean arc between them,

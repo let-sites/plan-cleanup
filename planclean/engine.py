@@ -156,7 +156,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if re.fullmatch(r"[&$S ]+", n) or any(p.match(n.replace(' ', '')) or p.match(n) for p in drops):
             res.dropped_labels.append(n); continue
         m = difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.7)
-        if m and w['size'] >= profile.room_text_min_size:
+        if not m and len(n) >= 4:       # a misread ending ('TANG' for TANDEM) is fine when the start is right
+            m = [k for k in difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.6) if k[:3] == n[:3]]
+        if m and w['size'] >= profile.room_text_min_size - 0.5:     # the text reader's box height wobbles a little
             w['room'] = profile.room_names[m[0]]; rooms.append(w)
         else:
             # short labels next to a symbol (WP, GFI, GF, 220, Q, 3(T)...) describe the builder's symbol: drop them

@@ -4,7 +4,7 @@ Text is read in the sheet's display orientation (PDF pages are often stored side
 so normal text reads left-to-right. Each word keeps its box in display coordinates
 (dbb, used for joining words and lines) and in page coordinates (bb)."""
 from __future__ import annotations
-import re
+import math, re
 import numpy as np, cv2
 from .vec import raster
 
@@ -29,8 +29,16 @@ def _unrotate_pts(b, rot, shape_before):
     if rot == cv2.ROTATE_90_CLOCKWISE: return np.c_[b[:, 1], H - 1 - b[:, 0]]
     if rot == cv2.ROTATE_180: return np.c_[W - 1 - b[:, 0], H - 1 - b[:, 1]]
 
+SNAP = 128      # points (512 px at scale 4, a whole number of the text finder's 32 px steps)
+
 def read_words(paths, region, page_rotation=0, scale=4):
-    native = 255 - raster(paths, region, scale)
+    # The text finder is sensitive to the image's edges and size, so read a page-fixed area: the box
+    # snapped outward to a 128 pt grid from the page origin. Boxes drawn a little differently around
+    # the same plan then read the same image, and a word reads the same however the box was drawn.
+    region = (math.floor(region[0] / SNAP) * SNAP, math.floor(region[1] / SNAP) * SNAP,
+              math.ceil(region[2] / SNAP) * SNAP, math.ceil(region[3] / SNAP) * SNAP)
+    W, H = round((region[2] - region[0]) * scale), round((region[3] - region[1]) * scale)
+    native = 255 - raster(paths, region, scale)[:H, :W]
     r0 = _ROT.get(page_rotation % 360)
     disp = cv2.rotate(native, r0) if r0 is not None else native
     words = []
@@ -96,7 +104,7 @@ def stack_lines(words):
                 (aa, ap), (ba, bp) = _axes(a), _axes(b)
                 if ap[0] > bp[0]: continue          # a must be the upper line
                 ov = min(aa[1], ba[1]) - max(aa[0], ba[0]); gap = bp[0] - ap[1]
-                if ov > 5 and gap < 4:
+                if ov > 5 and gap < 6:
                     a['lines'] = a['lines'] + b['lines']; _absorb(a, b)
                     words.remove(b); merged = True; break
             if merged: break

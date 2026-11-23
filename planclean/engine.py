@@ -105,13 +105,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         d = np.hypot(pts[:, 0] - x, pts[:, 1] - y); i = int(d.argmin()); return float(d[i]), pts[i]
 
     used = set()
+    RATING = re.compile(r'\b\d{3} ?[VY]?\b.*\b\d{2,3} ?A\b')     # '220V 40A GFCI'
     for h in hits:
         h['mods'] = []
         for w in words:
             if math.hypot(w['cx'] - h['x'], w['cy'] - h['y']) < 16:
                 for m in ('GFI', 'WP', 'DISK', '220', '240', 'CLG'):
                     if m in w['n'].replace(' ', ''):
-                        h['mods'].append(m); used.add(id(w))
+                        h['mods'].append(m)
+                        if not RATING.search(w['n']): used.add(id(w))   # a circuit rating stays as a note
         if h['cls'] in ('ceiling_light', 'wall_light'):
             d, _ = nearest(walls, h['x'], h['y'])
             h['cls'] = 'wall_light' if d < profile.wall_light_max_dist else 'ceiling_light'
@@ -130,7 +132,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 h = min(cands, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
                 if math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < (45 if ev else 30):
                     h['cls'] = 'outlet_240'
-                    if not ev: used.add(id(w))           # 'EV READY' stays on the plan as a note
+                    # the words stay on the plan as a note ('EV READY', '220V 40A GFCI')
     # "BLK & WIRE FOR CLG. FAN" -> the nearest ceiling light becomes a fan
     for w in words:
         if 'FAN' in w['n'] and ('CLG' in w['n'] or 'WIRE' in w['n']):
@@ -153,6 +155,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for w in words:
         if id(w) in used: continue
         n = w['n']
+        if RATING.search(n):
+            notes.append(w); continue                         # a circuit rating ('220V 40A GFCI') is always kept
         if re.fullmatch(r"[&$S ]+", n) or any(p.match(n.replace(' ', '')) or p.match(n) for p in drops):
             res.dropped_labels.append(n); continue
         m = difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.7)
@@ -494,6 +498,14 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             dev = max(float(np.hypot(curve[:, 0] - x, curve[:, 1] - y).min()) for x, y in mid[::max(1, len(mid) // 40)])
             return f if (dev <= max(5.0, 0.15 * L) or forced) else None
         forced = to_note(ia, P[0]) or to_note(ib, P[-1])
+        # a run lying along a word the text reader only partly read ('RINKLE' for SPRINKLER) is its letters, not a wire
+        inside = np.zeros(len(P), bool)
+        for b, w in zip(word_boxes_ext, words):
+            if w['n'].startswith('TO'): continue              # wires do run up to 'TO LIGHT ABOVE'
+            inside |= (P[:, 0] >= b[0]) & (P[:, 0] <= b[2]) & (P[:, 1] >= b[1]) & (P[:, 1] <= b[3])
+        if len(P) and inside.mean() >= 0.6 and not forced:
+            removed['text strokes'] = removed.get('text strokes', 0) + len(seq)
+            continue
         def _attached(i, pt, inward):
             """The end reaches the symbol: right at it, or within reach and heading straight for it."""
             if i < 0: return False
@@ -573,7 +585,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         X, Y = tx(w['cx'], w['cy']); res.texts.append(Text('room', [w['room']], X, Y))
     for w in notes:
         X, Y = tx(w['cx'], w['cy'])
-        lines = [' '.join(NOTE_WORDS.get(t, t) for t in ln.split()) for ln in w['lines']]
+        lines = [' '.join(NOTE_WORDS.get(t, t) for t in re.sub(r'\b(\d{3}) ?Y\b', r'\1V', ln).split()) for ln in w['lines']]   # 220Y -> 220V
         res.texts.append(Text('note', lines, X, Y, review='Builder note kept: check it' if w['score'] < 0.7 else ''))
     res.stats = dict(removed=removed, words=len(words), symbols=len(hits))
     return res

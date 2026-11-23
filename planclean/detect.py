@@ -9,13 +9,21 @@ def symbol_image(paths, region):
     img = raster(paths, region, S).astype(np.float32)
     return cv2.GaussianBlur(img, (0, 0), 1.2)
 
+def _closed(p):
+    it = p['items']
+    a, b = it[0][1], it[-1][-1]
+    return abs(a.x - b.x) + abs(a.y - b.y) < 0.2
+
 def anchors(paths):
     """Candidate symbol centres: small circles, and compact glyph-like stroke groups."""
     out = []
     for p in paths:
         r = p['rect']
         ncurve = sum(i[0] == 'c' for i in p['items'])
-        if ncurve >= 4 and 3 < r.width < 20 and abs(r.width - r.height) < 0.4:
+        # a circle: four or more curves, or (in some CAD exports) a many-sided polygon
+        nline = sum(i[0] == 'l' for i in p['items'])
+        roundish = ncurve >= 4 or (nline >= 12 and _closed(p))
+        if roundish and 3 < r.width < 20 and abs(r.width - r.height) < 0.4:
             out.append(('circle', (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))
         elif len(p['items']) >= 4 and max(r.width, r.height) < 8 and min(r.width, r.height) > 2.5:
             out.append(('glyph', (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))

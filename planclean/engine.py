@@ -260,9 +260,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # long solid strokes (stair rails, boxes) are never dashes of a wire: keep them as drawn
     SOLID = 30.0
     plen = lambda q: float(np.sum(np.hypot(*np.diff(q, axis=0).T)))
-    for q in wire_pieces:
-        if plen(q) > SOLID: res.lines.append(('wiring', [tx(*v) for v in q], False))
-    wire_pieces = [q for q in wire_pieces if plen(q) <= SOLID]
+    def straight(q):
+        C = q[-1] - q[0]; Lc = float(np.hypot(*C))
+        if Lc < 1: return False
+        return float(np.abs((q - q[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) < max(1.0, 0.03 * Lc)
+    # (long curved dashes are still wire: some builders draw wires with long dashes)
+    solid = [plen(q) > SOLID and straight(q) for q in wire_pieces]
+    for q, sd in zip(wire_pieces, solid):
+        if sd: res.lines.append(('wiring', [tx(*v) for v in q], False))
+    wire_pieces = [q for q, sd in zip(wire_pieces, solid) if not sd]
     NO_WIRES = ('smoke', 'co_smoke')                        # smoke / CO detectors never have wires
     wire_ok = np.array([h['cls'] not in NO_WIRES for h in hits], bool)
     def wire_hit(pt):
@@ -275,25 +281,126 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             for b in h.get('note_boxes', ()):
                 if b[0] - 12 <= pt[0] <= b[2] + 12 and b[1] - 12 <= pt[1] <= b[3] + 12: return i
         return -1
+    def ahead_hit(pt, d, reach=45.0):
+        """A loose wire end that points straight at a symbol a little way off ends at that symbol."""
+        n = float(np.hypot(*d))
+        if n < 1e-6 or not len(hxy): return -1
+        d = d / n; best, bd = -1, reach
+        for i, h in enumerate(hits):
+            if not wire_ok[i]: continue
+            v = np.array([h['x'] - pt[0], h['y'] - pt[1]]); L = float(np.hypot(*v))
+            if L < bd and L > 1e-6 and float(v @ d) / L > 0.9: best, bd = i, L
+        return best
     def to_note(i, pt):
         return i >= 0 and math.hypot(hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]) > ATTACH
-    for seq in wiring.chain(wire_pieces, gap=16.0):
+    def join_free_ends(chains, gap=16.0, max_turn=100.0):
+        """Tight curves (a wire looping round to a light) bend more between dashes than chain() allows.
+        Join two chains end to end where both ends are loose (at no symbol) and the wire carries on."""
+        cos_max = math.cos(math.radians(max_turn))
+        def loose(seq, last):
+            """An end at no symbol, or at the same symbol the chain's other end starts from (it is just leaving it)."""
+            pt = end(seq, last)[0]
+            h = wire_hit(pt)
+            if h < 0 or h == wire_hit(end(seq, not last)[0]): return True
+            return math.hypot(hits[h]['x'] - pt[0], hits[h]['y'] - pt[1]) > 12.0   # near, but not at, a symbol
+        def end(seq, last):
+            q = seq[-1] if last else seq[0]
+            return (q[-1], wiring._dir(q, True)) if last else (q[0], wiring._dir(q, False))
+        def bent(seq):
+            P = np.vstack(seq); C = P[-1] - P[0]; Lc = float(np.hypot(*C))
+            if Lc < 1: return True
+            return float(np.abs((P - P[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) >= max(1.5, 0.04 * Lc)
+        def anchored(seq):
+            """One end of the chain is at a switch or light (cabinet lines don't start at those)."""
+            for last in (False, True):
+                h = wire_hit(end(seq, last)[0])
+                if h >= 0 and hits[h]['cls'] not in ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet'):
+                    return True
+            return False
+        changed = True
+        while changed:
+            changed = False
+            best = None
+            for i in range(len(chains)):
+                bi = bent(chains[i])
+                for li in (False, True):
+                    pa, da = end(chains[i], li)
+                    if not loose(chains[i], li): continue
+                    for j in range(i + 1, len(chains)):
+                        bj = bent(chains[j])
+                        for lj in (False, True):
+                            pb, db = end(chains[j], lj)
+                            g = float(np.hypot(*(pb - pa)))
+                            if g > 2.5 * gap or not loose(chains[j], lj): continue
+                            if g > gap:                          # a longer gap only where a word was written over the wire
+                                m = (pa + pb) / 2
+                                if not any(b[0] <= m[0] <= b[2] and b[1] <= m[1] <= b[3] for b in word_boxes): continue
+                            # close by, the wire may bend sharply; across a longer gap (where a word
+                            # was drawn over the wire) it must carry straight on
+                            if g <= gap and not (bi and bj): continue   # sharp bends only between curved runs
+                            cm = cos_max if g <= gap else math.cos(math.radians(25.0))
+                            if np.dot(da, -db) < cm: continue
+                            if g > 0.3 and np.dot((pb - pa) / g, da) < cm: continue
+                            if best is None or g < best[0]: best = (g, i, li, j, lj)
+            if best:
+                _, i, li, j, lj = best
+                a = chains[i] if li else [q[::-1] for q in chains[i][::-1]]       # ends at the joint
+                b = chains[j] if not lj else [q[::-1] for q in chains[j][::-1]]   # starts at the joint
+                chains[i] = a + b; del chains[j]; changed = True
+        return chains
+    def split_at_symbols(chains, r=20.0):
+        """A chain that runs on through a symbol is two wires that both end at it."""
+        out = []
+        for seq in chains:
+            if straight(np.vstack(seq)):
+                out.append(seq); continue                    # a straight dashed line (cabinet) stays whole
+            cur = [seq[0]]
+            total = sum(plen(q) for q in seq); before = plen(seq[0])
+            for q in seq[1:]:
+                a, b = cur[-1][-1], q[0]
+                mid = (a + b) / 2
+                h = near_hit(tuple(mid), r)
+                # only where the wire carries on well past the symbol on both sides
+                cut = h >= 0 and wire_ok[h] and (sum(plen(x) for x in cur) > 20 or straight(np.vstack(cur))) and total - before > 20
+                before += plen(q)
+                if cut:
+                    out.append(cur); cur = [q]
+                else:
+                    cur.append(q)
+            out.append(cur)
+        return out
+    _ch = join_free_ends(split_at_symbols(wiring.chain(wire_pieces, gap=16.0)))
+    for seq in _ch:
+            a, b = seq[0][0], seq[-1][-1]
+            if all(abs(z[0] - 541) < 30 and 1480 < z[1] < 1570 for z in (a, b)):
+                print('CH', len(seq), a.round(1), wire_hit(a), wiring._dir(seq[0], False).round(2), b.round(1), wire_hit(b), wiring._dir(seq[-1], True).round(2))
+    for seq in _ch:
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
         length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
         ia, ib = wire_hit(P[0]), wire_hit(P[-1])
         if float((P.max(axis=0) - P.min(axis=0)).max()) < 8 and near_hit(P.mean(axis=0), 28) >= 0:
             removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
         if len(seq) == 1:
+            if length < 6 and ia < 0 and ib < 0:
+                removed['stray letters'] += 1; continue      # a lone tick (a bit of a label over the wire)
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue   # a solid stroke, not a dashed wire: leave it
         # curved or dash-dot runs are wires; straight plain dashes are cabinet or soffit lines: keep them
         C = P[-1] - P[0]; Lc = float(np.hypot(*C))
         bow = float(np.abs((P - P[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) if Lc > 1 else 0.0
         curved = bow >= max(1.5, 0.04 * Lc)
         closed = Lc < 0.3 * length                          # loops back on itself (range burners, circles)
-        if (not curved and not dash_dot(seq)) or (closed and ia < 0 and ib < 0):
+        # a straight dashed run from one symbol to another is still a wire (cabinet lines don't end at symbols)
+        OUTLETS = ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet')
+        links = (ia >= 0 and ib >= 0 and ia != ib and length < 50 and (len(seq) <= 2 or dash_dot(seq))
+                 and hits[ia]['cls'] not in OUTLETS and hits[ib]['cls'] not in OUTLETS)
+        if (not curved and not dash_dot(seq) and not links) or (closed and ia < 0 and ib < 0):
             removed['dashed lines kept'] = removed.get('dashed lines kept', 0) + 1
             for q in seq: res.lines.append(('misc' if not curved else 'wiring', [tx(*v) for v in q], False))
             continue
+        # a wire end that stops short, pointing at a symbol, ends at that symbol
+        if curved and (ia < 0) != (ib < 0):                   # one end at a symbol, the other stops short
+            if ia < 0: ia = ahead_hit(P[0], P[0] - P[min(3, len(P) - 1)])
+            else: ib = ahead_hit(P[-1], P[-1] - P[max(-4, -len(P))])
         if ia >= 0 and ia == ib:
             continue                                         # both ends at one symbol: part of it
         def redraw(A, B):
@@ -316,6 +423,18 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         for A, B in ((hA, hB), (hA, None), (None, hB), (None, None)):
             f = redraw(A if A is not None else P[0], B if B is not None else P[-1])
             if f: break
+        if f is None and hA is not None and hB is not None:
+            # the builder looped or wiggled between two symbols: still one clean arc between them,
+            # bowing to the same side as the builder's wire (at most a half circle)
+            AB = hB - hA; L = float(np.hypot(*AB))
+            if L >= 1:
+                nrm = np.array([-AB[1], AB[0]]) / L
+                off = (P - hA) @ nrm; k = int(np.abs(off).argmax())
+                sag = float(np.clip(off[k], -0.5 * L, 0.5 * L))
+                if abs(sag) > 0.02 * L:
+                    f = wiring.arc_through(tuple(hA), tuple((hA + hB) / 2 + nrm * sag), tuple(hB))
+                else:
+                    f = ('line', tuple(hA), tuple(hB))
         if f is None:                                        # nothing fits: keep the builder's wire, joined up
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue
         if f[0] == 'arc':

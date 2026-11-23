@@ -62,13 +62,44 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # lettering from short open strokes of the other pens too, and turn it into a clean title.
     letters = [p for p in pl if role(p) in ('wall', 'misc', 'casework') and not is_filled(p)
                and max(p['rect'].width, p['rect'].height) < 30]
+    VOCAB = ({t for k in profile.room_names for t in k.split()} |
+             {'ELECTRICAL', 'PLAN', 'OPT.', 'OPTIONAL', 'CAR', 'BAY', 'SCALE', 'FLOOR', 'FIRST', 'SECOND', 'LIGHTING',
+              'SPACE', 'READY', 'SPRINKLER', 'ABOVE', 'BELOW', 'LIGHT', 'SWITCH', 'FUTURE', 'PRE-WIRE', 'APPLIANCES',
+              'FIREPLACE', 'DOOR', 'WIRE', 'OUTLET', 'CEILING', 'FAN', 'GARAGE', 'DISCONNECT'})
+    def known(t): return t in VOCAB or re.fullmatch(r'\d+(ST|ND|RD|TH)', t) is not None
+    def split_words(tok):
+        """'ELECTRICALPLAN-' -> 'ELECTRICAL PLAN -', '4THCARGARAGE' -> '4TH CAR GARAGE' (known words run together)."""
+        core = tok.strip('-'); best = {0: []}
+        for i in range(1, len(core) + 1):
+            for j in range(max(0, i - 12), i):
+                if j in best and known(core[j:i]) and (i not in best or len(best[j]) + 1 < len(best[i])): best[i] = best[j] + [core[j:i]]
+        if len(core) in best and len(best[len(core)]) > 1: return ' '.join(best[len(core)]) + (' -' if tok.endswith('-') else '')
+        return tok
+    def fix_word(tok):
+        if known(tok) or len(tok) < 4: return tok
+        t2 = split_words(tok)
+        if t2 != tok: return t2
+        if not tok.isalpha(): return tok
+        m = difflib.get_close_matches(tok, list(VOCAB), n=1, cutoff=0.8); return m[0] if m else tok   # 'GARAGI' -> GARAGE
+    def title_text(n):
+        n = re.sub(r'\bA(?=TH)', '4', n)                               # 'ATH' is 4TH
+        n = re.sub(r'(OPT\.)(?=\w)', r'\1 ', n)
+        return ' '.join(fix_word(t) for t in n.split())
+    def title_quality(w):
+        toks = re.sub(r'[^A-Z0-9. ]', ' ', title_text(w['n'])).split()
+        return sum(len(t) for t in toks if known(t)) / max(1, len(w['n'].replace(' ', ''))) + w['score']
     titles = []
     if len(letters) >= 20:
-        # big lettering reads best small (and whole: a title can be longer than a reading tile)
-        for w in sorted(ocr.merge_same_line(ocr._read_area(letters, region, page.rotation, 1.5)), key=lambda w: -len(w['n'])):
-            if w['size'] >= 12 and len(re.sub(r'[^A-Z0-9]', '', w['n'])) >= 6 and w['score'] >= 0.6 \
-                    and not any(ocr._overlap(w['bb'], t['bb']) > 0.5 for t in titles):
+        # big lettering reads best small (and whole: a title can be longer than a reading tile); read it at a few
+        # sizes and keep, for each spot, the reading that makes the most sense
+        cands = []
+        for sc in (1.5, 2.0, 2.5):
+            cands += [w for w in ocr.merge_same_line(ocr._read_area(letters, region, page.rotation, sc))
+                      if w['size'] >= 12 and len(re.sub(r'[^A-Z0-9]', '', w['n'])) >= 6 and w['score'] >= 0.5]
+        for w in sorted(cands, key=title_quality, reverse=True):
+            if not any(ocr._overlap(w['bb'], t['bb']) > 0.4 for t in titles):
                 titles.append(w)
+        titles = [w for w in titles if title_quality(w) >= 1.2]          # mostly real words, read with some confidence
 
     # 3. walls (for turning symbols and telling wall lights from ceiling lights)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
@@ -163,6 +194,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # 4. words -> room names, kept notes, dropped labels
     drops = profile.compiled_drop()
     rooms, notes = [], []
+    def rating_text(t):
+        """Tidy a circuit rating however it was read: '220V4OAGFCI' -> '220V 40A GFCI'."""
+        t = re.sub(r'(2[24]0) ?[VY]? ?(?=\d)', r'\1V ', t)            # '220V4 A' -> '220V 4 A'
+        t = re.sub(r'\b(\d)[O0]A', r'\g<1>0A ', t)                     # '4OAGFCI' -> '40A GFCI'
+        t = re.sub(r'\b(2[24]0)[VY]?\b', r'\1V', t)
+        t = re.sub(r'\b(\d{2}) ?A ?', r'\1A ', t)
+        t = re.sub(r'\b[AS]?[GS]FC[I1L]?\b', 'GFCI', re.sub(r'(\d)A([GS]FC)', r'\1A \2', t))
+        t = re.sub(r'\b\d\b', '', t)                                 # a lone digit is a half-read amp rating: leave it out
+        return re.sub(r'\s+', ' ', t).strip()
     ratings = {}
     for w in words:
         if id(w) in used: continue
@@ -191,13 +231,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             notes.append(w)
     for group in ratings.values():
         group.sort(key=lambda w: (round(w['dbb'][1] / 6), w['dbb'][0]) if not w['vert'] else (round(w['dbb'][0] / 6), -w['dbb'][3]))
-        t = ' '.join(w['n'] for w in group)
-        t = re.sub(r'(2[24]0) ?[VY]? ?(?=\d)', r'\1V ', t)            # '220V4 A' -> '220V 4 A'
-        t = re.sub(r'\b(\d)[O0]A', r'\g<1>0A ', t)                     # '4OAGFCI' -> '40A GFCI'
-        t = re.sub(r'\b(2[24]0)[VY]?\b', r'\1V', t)
-        t = re.sub(r'\b(\d{2}) ?A ?', r'\1A ', t)
-        t = re.sub(r'\b[AS]?[GS]FC[I1L]?\b', 'GFCI', re.sub(r'(\d)A([GS]FC)', r'\1A \2', t))
-        t = re.sub(r'\b\d\b', '', t)                                 # a lone digit is a half-read amp rating: leave it out
+        t = rating_text(' '.join(w['n'] for w in group))
         if not re.search(r'2[24]0', t): continue                    # amps alone don't make a rating
         w = dict(group[0]); w['n'] = w['text'] = re.sub(r'\s+', ' ', t).strip(); w.pop('lines', None)
         for v in group[1:]: ocr._absorb(w, v)
@@ -641,25 +675,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if not m: return ln
             a, b = (re.sub('[IO]', lambda c: '1' if c.group() == 'I' else '0', g) for g in m.groups())
             return f'SCALE: {a}/{b}" = 1\'-0"'                  # 'SCALE I/4 I-O' -> SCALE: 1/4" = 1'-0"
-        lines = [scale(ln) for ln in lines]
+        lines = [scale(rating_text(ln) if re.search(r'2[24]0 ?[VY]', ln) else ln) for ln in lines]
+        lines = [' '.join(fix_word(t) for t in ln.split()) for ln in lines]
         res.texts.append(Text('note', lines, X, Y, review='Builder note kept: check it' if w['score'] < 0.7 else ''))
     if titles:
-        vocab = {t for k in profile.room_names for t in k.split()} | {'ELECTRICAL', 'PLAN', 'OPT.', 'OPTIONAL', 'CAR', 'BAY', 'SCALE', 'FLOOR', 'LIGHTING'}
-        def split(tok):
-            """'ELECTRICALPLAN-' -> 'ELECTRICAL PLAN -' when it is known words run together."""
-            core = tok.strip('-'); best = {0: []}
-            for i in range(1, len(core) + 1):
-                for j in range(max(0, i - 12), i):
-                    if j in best and core[j:i] in vocab and (i not in best or len(best[j]) + 1 < len(best[i])): best[i] = best[j] + [core[j:i]]
-            return ' '.join(best[len(core)]) + (' -' if tok.endswith('-') else '') if len(core) in best and len(best[len(core)]) > 1 else tok
-        def fix(tok):
-            if tok in vocab or len(tok) < 4: return tok
-            t2 = split(tok)
-            if t2 != tok: return t2
-            if not tok.isalpha(): return tok
-            m = difflib.get_close_matches(tok, list(vocab), n=1, cutoff=0.8); return m[0] if m else tok   # 'GARAGI' -> GARAGE
         titles.sort(key=lambda w: (w['dbb'][1], w['dbb'][0]))      # top line first, as the sheet reads
-        lines = [' '.join(fix(t) for t in re.sub(r'(OPT\.)(?=\w)', r'\1 ', w['n']).split()) for w in titles]
+        lines = [title_text(w['n']) for w in titles]
         cx = sum(w['cx'] for w in titles) / len(titles); cy = sum(w['cy'] for w in titles) / len(titles)
         X, Y = tx(cx, cy); res.texts.append(Text('title', lines, X, Y))
     res.stats = dict(removed=removed, words=len(words), symbols=len(hits))

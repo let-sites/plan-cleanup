@@ -30,7 +30,7 @@ jobs:
         include:
           - os: windows-latest
             name: PlanCleanup-Windows
-          - os: macos-latest
+          - os: macos-15-intel   # arm64 Macs were unavailable on GitHub; Intel build runs on any Mac
             name: PlanCleanup-Mac
     runs-on: ${{ matrix.os }}
     steps:

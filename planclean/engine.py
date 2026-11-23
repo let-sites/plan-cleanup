@@ -83,6 +83,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         m = difflib.get_close_matches(tok, list(VOCAB), n=1, cutoff=0.8); return m[0] if m else tok   # 'GARAGI' -> GARAGE
     def title_text(n):
         n = re.sub(r'\bA(?=TH)', '4', n)                               # 'ATH' is 4TH
+        n = re.sub(r'\bOP[T1I]?\.', 'OPT.', n)                         # 'OP.' is OPT.
         n = re.sub(r'(OPT\.)(?=\w)', r'\1 ', n)
         return ' '.join(fix_word(t) for t in n.split())
     def title_quality(w):
@@ -676,7 +677,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             a, b = (re.sub('[IO]', lambda c: '1' if c.group() == 'I' else '0', g) for g in m.groups())
             return f'SCALE: {a}/{b}" = 1\'-0"'                  # 'SCALE I/4 I-O' -> SCALE: 1/4" = 1'-0"
         lines = [scale(rating_text(ln) if re.search(r'2[24]0 ?[VY]', ln) else ln) for ln in lines]
-        lines = [' '.join(fix_word(t) for t in ln.split()) for ln in lines]
+        lines = [re.sub(r'\((I|L|l)\)', '(1)', ' '.join(fix_word(t) for t in ln.split())) for ln in lines]   # '(I)' is (1)
         res.texts.append(Text('note', lines, X, Y, review='Builder note kept: check it' if w['score'] < 0.7 else ''))
     if titles:
         titles.sort(key=lambda w: (w['dbb'][1], w['dbb'][0]))      # top line first, as the sheet reads

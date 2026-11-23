@@ -105,7 +105,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         d = np.hypot(pts[:, 0] - x, pts[:, 1] - y); i = int(d.argmin()); return float(d[i]), pts[i]
 
     used = set()
-    RATING = re.compile(r'\b\d{3} ?[VY]?\b.*\b\d{2,3} ?A\b')     # '220V 40A GFCI'
+    RATING_PART = re.compile(r'2[24]0|\b\d{2} ?A\b|[GS]FC')        # bits of a circuit rating ('220V 40A GFCI')
     for h in hits:
         h['mods'] = []
         for w in words:
@@ -113,7 +113,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 for m in ('GFI', 'WP', 'DISK', '220', '240', 'CLG'):
                     if m in w['n'].replace(' ', ''):
                         h['mods'].append(m)
-                        if not RATING.search(w['n']): used.add(id(w))   # a circuit rating stays as a note
+                        if not RATING_PART.search(w['n']): used.add(id(w))   # a circuit rating stays as a note
         if h['cls'] in ('ceiling_light', 'wall_light'):
             d, _ = nearest(walls, h['x'], h['y'])
             h['cls'] = 'wall_light' if d < profile.wall_light_max_dist else 'ceiling_light'
@@ -152,11 +152,17 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # 4. words -> room names, kept notes, dropped labels
     drops = profile.compiled_drop()
     rooms, notes = [], []
+    ratings = {}
     for w in words:
         if id(w) in used: continue
         n = w['n']
-        if RATING.search(n):
-            notes.append(w); continue                         # a circuit rating ('220V 40A GFCI') is always kept
+        if RATING_PART.search(n):
+            # the builder's circuit rating under a 220/240V outlet ('220V 40A GFCI') is kept as one note,
+            # however the text reader split or garbled it
+            near = [h for h in hits if h['cls'] == 'outlet_240' and math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < 45]
+            if near:
+                h = min(near, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
+                ratings.setdefault(id(h), []).append(w); continue
         if re.fullmatch(r"[&$S ]+", n) or any(p.match(n.replace(' ', '')) or p.match(n) for p in drops):
             res.dropped_labels.append(n); continue
         m = difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.7)
@@ -172,6 +178,18 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 1:
                 res.dropped_labels.append(n); continue       # a lone letter is a stray mark, not a note
             notes.append(w)
+    for group in ratings.values():
+        group.sort(key=lambda w: (round(w['dbb'][1] / 6), w['dbb'][0]) if not w['vert'] else (round(w['dbb'][0] / 6), -w['dbb'][3]))
+        t = ' '.join(w['n'] for w in group)
+        t = re.sub(r'(2[24]0) ?[VY]? ?(?=\d)', r'\1V ', t)            # '220V4 A' -> '220V 4 A'
+        t = re.sub(r'\b(2[24]0)[VY]?\b', r'\1V', t)
+        t = re.sub(r'\b(\d{2}) ?A ?', r'\1A ', t)
+        t = re.sub(r'\b[AS]?[GS]FC[I1L]?\b', 'GFCI', re.sub(r'(\d)A([GS]FC)', r'\1A \2', t))
+        t = re.sub(r'\b\d\b', '', t)                                 # a lone digit is a half-read amp rating: leave it out
+        if not re.search(r'2[24]0', t): continue                    # amps alone don't make a rating
+        w = dict(group[0]); w['n'] = w['text'] = re.sub(r'\s+', ' ', t).strip(); w.pop('lines', None)
+        for v in group[1:]: ocr._absorb(w, v)
+        notes.append(w)
     notes = ocr.stack_lines(notes)
 
     # builder settings: symbol kinds LET leaves off this builder's plans (their wires go too)

@@ -20,7 +20,8 @@ DEFAULT_ROOMS = {
 }
 DEFAULT_DROP = [r"^GFI$", r"^WP/?GFI$", r"^WP$", r"^DISK$", r"^220V?$", r"^CLG\.?$", r"^PENDANTS?$",
                 r"^CO/SD\.?$", r"^SD/CO\.?$", r"^SD$", r"^\d{4} ?SR[O0]$", r"^E-?PANEL$", r"^EMER\.?$", r"^DISCONNECT$"]
-NOTE_WORDS = {"ABV": "ABOVE", "ABY": "ABOVE", "BLW": "BELOW"}
+NOTE_WORDS = {"ABV": "ABOVE", "ABY": "ABOVE", "AB": "ABOVE", "BLW": "BELOW",
+              "TOFAN": "TO FAN", "TOLIGHT": "TO LIGHT"}   # common misreads of the builder's short notes
 
 def img_to_b64(img):
     ok, buf = cv2.imencode('.png', img.astype(np.uint8)); return base64.b64encode(buf.tobytes()).decode()

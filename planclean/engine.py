@@ -181,8 +181,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for group in ratings.values():
         group.sort(key=lambda w: (round(w['dbb'][1] / 6), w['dbb'][0]) if not w['vert'] else (round(w['dbb'][0] / 6), -w['dbb'][3]))
         t = ' '.join(w['n'] for w in group)
-        t = re.sub(r'\b(\d)[O0]A', r'\g<1>0A ', t)                     # '4OAGFCI' -> '40A GFCI'
         t = re.sub(r'(2[24]0) ?[VY]? ?(?=\d)', r'\1V ', t)            # '220V4 A' -> '220V 4 A'
+        t = re.sub(r'\b(\d)[O0]A', r'\g<1>0A ', t)                     # '4OAGFCI' -> '40A GFCI'
         t = re.sub(r'\b(2[24]0)[VY]?\b', r'\1V', t)
         t = re.sub(r'\b(\d{2}) ?A ?', r'\1A ', t)
         t = re.sub(r'\b[AS]?[GS]FC[I1L]?\b', 'GFCI', re.sub(r'(\d)A([GS]FC)', r'\1A \2', t))

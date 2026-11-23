@@ -6,7 +6,7 @@ SYMBOL_TYPES = {
     "dimmer":         ("Dimmer switch",                        "standard_dimmerswitch_lisp", True),
     "ceiling_light":  ("Ceiling light",                        "standard_ceiling_light_prewire", False),
     "wall_light":     ("Wall light / sconce",                  "standard_wall_light", True),
-    "recessed_can":   ("Recessed can",                         "standard_block", False),
+    "recessed_can":   ("Recessed can",                         "standard_recessed", False),
     "pendant":        ("Pendant light",                        "standard_ceiling_light_prewire", False),
     "disk_light":     ("Disk light",                           "standard_disk_light", False),
     "fan":            ("Ceiling fan",                          "standard_fan", False),

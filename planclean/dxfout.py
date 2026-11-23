@@ -15,7 +15,63 @@ ROLE_LAYER = {'wall': 'BASE-WALLS', 'opening': 'BASE-DOORS-WINDOWS', 'casework':
 def load_library(path):
     from ezdxf import recover
     doc, _ = recover.readfile(path)
+    _recentre_far_blocks(doc)
     return doc
+
+def _recentre_far_blocks(doc):
+    """A block whose drawing sits far from its base point (base point never set) is moved so
+    its middle is on the base point; otherwise it would land hundreds of feet away."""
+    from ezdxf import bbox
+    for b in doc.blocks:
+        if b.name.startswith('*') or not len(b): continue
+        try: ext = bbox.extents(b, fast=True)
+        except Exception: continue
+        if not ext.has_data: continue
+        c = ext.center
+        if math.hypot(c.x, c.y) > 100 and max(ext.size.x, ext.size.y) < 200:
+            for e in b:
+                try: e.translate(-c.x, -c.y, 0)
+                except Exception: pass
+
+def wire_point(blk):
+    """Where wires end on this block: the POINT you put in it, in block units, or None."""
+    if blk is None: return None
+    for e in blk:
+        if e.dxftype() == 'POINT':
+            p = e.dxf.location; return (p.x, p.y)
+    return None
+
+def retarget_wires(res, block_of):
+    """Lines and arcs of the result with wire ends moved from symbol centres to each block's wire POINT."""
+    from .wiring import arc_through
+    moves = {}
+    for s in res.symbols:
+        blk = block_of(s); pt = wire_point(blk)
+        if pt is None: continue
+        x, y, rot = placement(s, blk); c, si = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        moves[(s.x, s.y)] = (x + pt[0] * c - pt[1] * si, y + pt[0] * si + pt[1] * c)
+    if not moves: return list(res.lines), list(getattr(res, 'arcs', []))
+    keys = list(moves)
+    def move(p):
+        for k in keys:
+            if abs(k[0] - p[0]) < 0.5 and abs(k[1] - p[1]) < 0.5: return moves[k]
+        return p
+    lines = []
+    for role, pts, filled in res.lines:
+        if role == 'wiring' and len(pts) >= 2:
+            pts = [move(pts[0])] + list(pts[1:-1]) + [move(pts[-1])]
+        lines.append((role, pts, filled))
+    arcs = []
+    for role, cx, cy, r, a0, a1 in getattr(res, 'arcs', []):
+        p0 = (cx + r * math.cos(math.radians(a0)), cy + r * math.sin(math.radians(a0)))
+        p1 = (cx + r * math.cos(math.radians(a1)), cy + r * math.sin(math.radians(a1)))
+        q0, q1 = move(p0), move(p1)
+        if q0 == p0 and q1 == p1: arcs.append((role, cx, cy, r, a0, a1)); continue
+        am = math.radians(a0 + ((a1 - a0) % 360) / 2)
+        f = arc_through(q0, (cx + r * math.cos(am), cy + r * math.sin(am)), q1)
+        if f[0] == 'arc': arcs.append((role,) + tuple(float(v) for v in f[1:]))
+        else: lines.append((role, [f[1], f[2]], False))
+    return lines, arcs
 
 def block_offset(blk):
     """Distance from a block's insert point (on the wall) to the symbol centre, along +Y."""
@@ -69,6 +125,8 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         imported = b.name in have
         for e in b:
             if not e.dxf.hasattr('layer') or not e.dxf.layer: e.dxf.layer = '0'
+            if imported and e.dxftype() == 'POINT':
+                e.dxf.layer = 'Defpoints'; continue
             if imported:
                 # your blocks live on $Standard (layer 0 would show in every viewport), coloured ByLayer
                 e.dxf.layer = symbol_layer
@@ -77,7 +135,10 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             if e.dxf.hasattr('style') and e.dxf.style not in out.styles: e.dxf.style = 'Standard'
     _placeholders(out)
     msp = out.modelspace()
-    for role, pts, filled in res.lines:
+    def block_of(s):
+        n = block_for(s.cls); return out.blocks.get(n) if n else None
+    wire_lines, wire_arcs = retarget_wires(res, block_of)
+    for role, pts, filled in wire_lines:
         lay = ROLE_LAYER.get(role, 'BASE-MISC')
         if len(pts) == 2:
             msp.add_line(pts[0], pts[1], dxfattribs={'layer': lay})
@@ -85,7 +146,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             msp.add_lwpolyline(pts, dxfattribs={'layer': lay})
             if filled:
                 h = msp.add_hatch(color=7, dxfattribs={'layer': lay}); h.paths.add_polyline_path(pts, is_closed=True)
-    for role, cx, cy, r, a0, a1 in getattr(res, 'arcs', []):
+    for role, cx, cy, r, a0, a1 in wire_arcs:
         msp.add_arc((cx, cy), r, a0, a1, dxfattribs={'layer': ROLE_LAYER.get(role, 'BASE-MISC')})
     missing = set()
     for s in res.symbols:
@@ -94,7 +155,10 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         if not name or out.blocks.get(name) is None:
             missing.add(name or s.cls); name = 'UNMAPPED'
         x, y, rot = placement(s, out.blocks.get(name))
-        msp.add_blockref(name, (x, y), dxfattribs={'layer': symbol_layer, 'rotation': rot})
+        ref = msp.add_blockref(name, (x, y), dxfattribs={'layer': symbol_layer, 'rotation': rot})
+        try:
+            if any(e.dxftype() == 'ATTDEF' for e in out.blocks.get(name)): ref.add_auto_attribs({})   # e.g. the 4" on a can
+        except Exception: pass
         if s.review:
             msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})
     for t in res.texts:

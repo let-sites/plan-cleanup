@@ -37,7 +37,7 @@ class BlockShapes:
         blk = self.block(name)
         try:
             for e in recursive_decompose(blk):
-                if e.dxftype() == 'TEXT' and e.dxf.get('text', ''):
+                if e.dxftype() in ('TEXT', 'ATTDEF') and e.dxf.get('text', ''):
                     ins = e.dxf.insert
                     txt.append((ins.x, ins.y, float(e.dxf.get('height', 1.0)), float(e.dxf.get('rotation', 0.0)), e.dxf.text))
                     continue

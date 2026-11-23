@@ -471,13 +471,16 @@ class MainWindow(QMainWindow):
         self.view.page_item.setOpacity(0.45 if self.show_orig.isChecked() else 0.0)
         bg = self.view.scene_.addRect(self.view.sceneRect(), Qt.NoPen, QColor('white')); bg.setZValue(-1); self.view.overlay.append(bg)
         polys = {}
-        for role, pts, f in self.result.lines:
+        shapes = self.block_shapes()
+        # wires end where your block's POINT says (e.g. the centre of a wall light's circle)
+        wire_lines, wire_arcs = dxfout.retarget_wires(self.result, lambda s: shapes.block(self.settings.block_for(s.cls)))
+        for role, pts, f in wire_lines:
             polys.setdefault(role, []).append([self._view_pt(*p) for p in pts])
         from planclean.wiring import arc_points
         if self.show_removed.isChecked() and getattr(self.result, 'original', None):
             it = self.view.add_paths([[self._view_pt(*p) for p in pts] for pts in self.result.original], '#f08c8c', 0)
             it.setOpacity(0.7); it.setZValue(5)
-        for role, cx, cy, r, a0, a1 in self.result.arcs:
+        for role, cx, cy, r, a0, a1 in wire_arcs:
             polys.setdefault(role, []).append([self._view_pt(*p) for p in arc_points(cx, cy, r, a0, a1)])
         for role, ps in polys.items():
             self.view.add_paths(ps, {'wall': '#111', 'wiring': '#555'}.get(role, '#888'), 1.5 if role == 'wall' else 0)

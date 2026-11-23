@@ -422,6 +422,13 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                     cur.append(q)
             out.append(cur)
         return out
+    sym_wires = []                   # (symbol, symbol, arc) for wires that run from one symbol to another
+    def emit(f):
+        if f[0] == 'arc':
+            cx, cy, r, a0, a1 = f[1:]
+            # to drawing units (y is flipped, so the arc runs the other way round)
+            X, Y = tx(cx, cy); res.arcs.append(('wiring', float(X), float(Y), float(r * K), float((-a1) % 360), float((-a0) % 360)))
+        else: res.lines.append(('wiring', [tx(*f[1]), tx(*f[2])], False))
     _ch = join_free_ends(split_at_symbols(wiring.chain(wire_pieces, gap=16.0)))
     for seq in _ch:
         P = np.vstack([seq[0]] + [q[1:] if np.hypot(*(q[0] - seq[0][-1])) < 0.05 else q for q in seq[1:]])
@@ -494,11 +501,38 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                     f = ('line', tuple(hA), tuple(hB))
         if f is None:                                        # nothing fits: keep the builder's wire, joined up
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue
-        if f[0] == 'arc':
-            cx, cy, r, a0, a1 = f[1:]
-            # to drawing units (y is flipped, so the arc runs the other way round)
-            X, Y = tx(cx, cy); res.arcs.append(('wiring', float(X), float(Y), float(r * K), float((-a1) % 360), float((-a0) % 360)))
-        else: res.lines.append(('wiring', [tx(*f[1]), tx(*f[2])], False))
+        if f[0] == 'arc' and hA is not None and hB is not None:
+            sym_wires.append((ia, ib, f)); continue          # drawn below, once wires that run together are matched up
+        emit(f)
+    # Wires from side-by-side symbols (a double switch) to one symbol bow the same way, as parallel arcs.
+    groups = {}
+    for k, (a, b, f) in enumerate(sym_wires):
+        groups.setdefault(a, []).append(k); groups.setdefault(b, []).append(k)
+    sag_of = {}
+    def ends(k, shared):
+        a, b, f = sym_wires[k]; other = b if a == shared else a
+        return np.array([hits[shared]['x'], hits[shared]['y']]), np.array([hits[other]['x'], hits[other]['y']])
+    def signed_sag(f, A, B):
+        """Bulge of an arc from A to B: + to the left of A->B, - to the right, as a share of the chord."""
+        cx, cy, r, a0, a1 = f[1:]
+        L = float(np.hypot(*(B - A))); nrm = np.array([-(B - A)[1], (B - A)[0]]) / L
+        mid = wiring.arc_points(cx, cy, r, a0, a1); m = mid[len(mid) // 2]
+        return float((m - (A + B) / 2) @ nrm) / L
+    for shared, ks in groups.items():
+        if len(ks) < 2: continue
+        others = [ends(k, shared)[1] for k in ks]
+        # only wires whose far ends sit close together (a gang of switches), not every wire into a busy symbol
+        close = [k for k, o in zip(ks, others) if all(np.hypot(*(o - o2)) < 20 for o2 in others)]
+        if len(close) < 2: continue
+        sags = [signed_sag(sym_wires[k][2], *ends(k, shared)) for k in close]
+        ref = max(sags, key=abs)
+        for k in close: sag_of.setdefault(k, (shared, ref))
+    for k, (a, b, f) in enumerate(sym_wires):
+        if k in sag_of:
+            shared, ref = sag_of[k]
+            A, B = ends(k, shared); L = float(np.hypot(*(B - A))); nrm = np.array([-(B - A)[1], (B - A)[0]]) / L
+            f = wiring.arc_through(tuple(A), tuple((A + B) / 2 + nrm * ref * L), tuple(B))
+        emit(f)
 
     # 6. symbols in drawing units, facing into the room
     for hi, h in enumerate(hits):

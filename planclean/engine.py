@@ -133,7 +133,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # "BLK & WIRE FOR CLG. FAN" -> the nearest ceiling light becomes a fan
     for w in words:
         if 'FAN' in w['n'] and ('CLG' in w['n'] or 'WIRE' in w['n']):
-            group = [w] + [v for v in words if v is not w and 'WIRE' in v['n'] and math.hypot(v['cx'] - w['cx'], v['cy'] - w['cy']) < 20]
+            def gap(a, b):          # space between two word boxes (0 when they touch or overlap)
+                return math.hypot(max(0.0, a[0] - b[2], b[0] - a[2]), max(0.0, a[1] - b[3], b[1] - a[3]))
+            # the rest of the note ("BLK & WIRE"), however the text reader split it into words
+            group = [w] + [v for v in words if v is not w and ('WIRE' in v['n'] or 'BLK' in v['n']) and gap(v['bb'], w['bb']) < 10]
             cands = [h for h in hits if h['cls'] in ('ceiling_light', 'disk_light')]
             if cands:
                 h = min(cands, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))

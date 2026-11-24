@@ -27,7 +27,11 @@ class SheetView(QGraphicsView):
         self._zb = None; self._zoom_buttons()
 
     def set_sheet(self, pixmap):
-        self.scene_.clear(); self.overlay = []; self.region_item = None
+        # Take every item out one by one rather than scene.clear(): clear() deletes the C++ items under
+        # Python's feet, and dropping a stale reference later (the blue box) crashed the app.
+        for it in self.scene_.items():
+            if it.parentItem() is None: self.scene_.removeItem(it)
+        self.overlay = []; self.region_item = None; self._band = None; self.page_item = None
         self.page_item = self.scene_.addPixmap(pixmap)
         self.scene_.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self.page_item, Qt.KeepAspectRatio)
@@ -150,12 +154,14 @@ class SheetView(QGraphicsView):
         super().mouseReleaseEvent(e)
 
     def show_region(self, r):
-        if self.region_item is not None: self.scene_.removeItem(self.region_item)
+        if self.region_item is not None and self.region_item.scene() is self.scene_:
+            self.region_item.setRect(r); return
         self.region_item = self.scene_.addRect(r, QPen(QColor('#4a90b8'), 0), QBrush(Qt.NoBrush))
         self.region_item.setZValue(5)
 
     def clear_overlay(self):
-        for it in self.overlay: self.scene_.removeItem(it)
+        for it in self.overlay:
+            if it.scene() is self.scene_: self.scene_.removeItem(it)
         self.overlay = []
         if self.page_item: self.page_item.setOpacity(1.0)
 

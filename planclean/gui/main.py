@@ -17,18 +17,27 @@ from planclean.engine import clean_pdf, pens_in, guess_roles
 from planclean.teach import Teacher
 from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
-from planclean.result import Result
+from planclean.result import Result, turned
 from planclean.jobs import CleanJob, attach_to_page
 from planclean.plan import Plan, combine, reattach, find_board, on_board
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
-from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog
+from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog, ManageBuildersDialog, edit_builder_settings
 THUMB_W = 200
 AREA_TYPES = ['Electrical plan', 'Option', 'Exterior elevation', 'Interior elevation']
 is_elev = lambda t: 'elevation' in t
 
 SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
+
+
+def upright(res, item):
+    """An elevation on a sideways sheet comes out of the cleanup sideways: turn it the way it reads on screen."""
+    if item.kind != 'pdf': return res
+    try:
+        with pymupdf.open(item.file) as d: rot = d[item.page].rotation
+    except Exception: return res
+    return turned(res, -rot)
 
 class Worker(QObject):
     done = Signal(object); failed = Signal(str); progress = Signal(str)
@@ -61,6 +70,13 @@ class SettingsDialog(QDialog):
                                 ('ODA File Converter', self.oda, b3, 'Free download from opendesign.com. Needed to read and write DWG.'),
                                 ('Master template (DWG)', self.tpl, b4, 'Your MASTER FILE TEMPLATE. Every new plan starts from it; leave empty for a blank drawing.')]:
             row = QHBoxLayout(); row.addWidget(ed); row.addWidget(b); w = QWidget(); w.setLayout(row); w.setToolTip(tip); f.addRow(lab, w)
+        if parent is not None:
+            row = QHBoxLayout()
+            mb = QPushButton('Manage builders…'); mb.setToolTip('See every builder; archive, restore or delete')
+            mb.clicked.connect(parent.manage_builders); row.addWidget(mb)
+            if parent.profile:
+                cb = QPushButton(f'Settings for {parent.profile.name}…'); cb.clicked.connect(parent.current_builder_settings); row.addWidget(cb)
+            row.addStretch(); w = QWidget(); w.setLayout(row); f.addRow('Builders', w)
         self.th_room = QDoubleSpinBox(); self.th_room.setValue(settings.text_height_room); self.th_room.setSuffix(' in')
         self.th_note = QDoubleSpinBox(); self.th_note.setValue(settings.text_height_note); self.th_note.setSuffix(' in')
         f.addRow('Room name text height', self.th_room); f.addRow('Note text height', self.th_note)
@@ -97,7 +113,7 @@ class MainWindow(QMainWindow):
         self.teacher = None; self.result: Result | None = None; self.dwg_doc = None; self._lib = None
         self.view = SheetView(); self.setCentralWidget(self.view)
         self.view.regionDrawn.connect(self.on_region); self.view.clicked.connect(self.on_teach_click); self.view.itemPicked.connect(self.on_pick)
-        self._toolbar(); self._docks()
+        self._toolbar(); self._docks(); self._menus()
         # big on/off switch for the builder's original drawing, pinned to the corner of the plan
         self.orig_btn = QPushButton('Show original  (O)'); self.orig_btn.setCheckable(True); self.orig_btn.setObjectName('origbtn')
         self.orig_btn.setToolTip('Flip the builder\'s original drawing on and off underneath the cleaned plan (key: O)')
@@ -119,12 +135,68 @@ class MainWindow(QMainWindow):
         tb = QToolBar('Main'); tb.setMovable(False); self.addToolBar(tb)
         b = _big('New plan…', primary=True); b.clicked.connect(self.new_cleanup); tb.addWidget(b)
         b = _big('Open plan…'); b.clicked.connect(self.open_plan_dialog); tb.addWidget(b)
-        QAction_ = QAction('New', self); QAction_.setShortcut(QKeySequence.New); QAction_.triggered.connect(self.new_cleanup); self.addAction(QAction_)
         self.info = QLabel(''); self.info.setStyleSheet('font-size:14px;padding-left:12px'); tb.addWidget(self.info)
         spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); tb.addWidget(spacer)
         self.save_btn = _big('Save drawing (DWG)…', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
         tb.addWidget(self.save_btn)
         b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
+
+    def _menus(self):
+        """A normal menu bar (on a Mac it sits at the top of the screen)."""
+        mb = self.menuBar()
+        def act(menu, text, fn, key=None, role=None, tip=''):
+            a = QAction(text, self); a.triggered.connect(lambda *_: fn())
+            if key: a.setShortcut(QKeySequence(key))
+            if role is not None: a.setMenuRole(role)
+            if tip: a.setStatusTip(tip)
+            menu.addAction(a); return a
+        m = mb.addMenu('File')
+        act(m, 'New plan…', self.new_cleanup, QKeySequence.New)
+        act(m, 'Open plan…', self.open_plan_dialog, QKeySequence.Open)
+        self.recent_menu = m.addMenu('Open recent'); self.recent_menu.aboutToShow.connect(self._fill_recent)
+        m.addSeparator()
+        act(m, 'Add files to this plan…', self.add_files)
+        act(m, 'Plan names…', self.edit_names)
+        m.addSeparator()
+        self.save_act = act(m, 'Save drawing (DWG)…', self.save_plan_dwg, QKeySequence.Save, tip='Last step: write the plan into your drawings')
+        m.addSeparator()
+        act(m, 'Settings…', self.open_settings, QKeySequence.Preferences, QAction.PreferencesRole)
+        act(m, 'Quit', self.close, QKeySequence.Quit, QAction.QuitRole)
+        m = mb.addMenu('View')
+        act(m, 'Fit to window', self.view.fit, 'F')
+        act(m, 'Zoom in', lambda: self.view.zoom(1.25), QKeySequence.ZoomIn)
+        act(m, 'Zoom out', lambda: self.view.zoom(0.8), QKeySequence.ZoomOut)
+        act(m, 'Show original on/off', lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
+        m = mb.addMenu('Builders')
+        act(m, 'Manage builders…', self.manage_builders, tip='See every builder; archive, restore or delete')
+        act(m, 'New builder…', self.new_builder)
+        act(m, 'Settings for this builder…', self.current_builder_settings)
+
+    def _fill_recent(self):
+        self.recent_menu.clear()
+        saved = Plan.list_saved()[:10]
+        if not saved: a = self.recent_menu.addAction('(no saved plans yet)'); a.setEnabled(False); return
+        for name, folder, _ in saved:
+            a = self.recent_menu.addAction(name); a.triggered.connect(lambda *_, f=folder: self.open_plan(f))
+
+    def manage_builders(self):
+        ManageBuildersDialog(self.settings, self).exec()
+        if self.profile and self.profile.name not in self.settings.list_profiles(): self.set_builder(None)
+
+    def new_builder(self):
+        name, ok = QInputDialog.getText(self, 'New builder', 'Builder name:')
+        if ok and name.strip():
+            p = Profile(name=name.strip()); BuilderSettingsDialog(p, self).exec()
+            p.save(self.settings.profile_path(p.name))
+            if QMessageBox.question(self, 'New builder', f'Use {p.name} for this plan now?') == QMessageBox.Yes:
+                self.set_builder(safe_name(p.name))
+                if self.plan: self.plan.builder = safe_name(p.name); self.plan.save()
+
+    def current_builder_settings(self):
+        if not self.profile:
+            QMessageBox.information(self, 'Builder settings', 'No builder is chosen yet. Start or open a plan first, or use Builders ▸ Manage builders….'); return
+        edit_builder_settings(self.settings, self.profile.name, self)
+        self.set_builder(self.profile.name)
 
     def update_info(self):
         parts = []
@@ -153,6 +225,10 @@ class MainWindow(QMainWindow):
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
         b = QPushButton('Names…'); b.setToolTip('Plan name, project name and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
         sv.addLayout(row)
+        self.done_btn = _big('Done adding? Save drawing…', primary=True); self.done_btn.clicked.connect(self.save_plan_dwg)
+        self.done_btn.setToolTip('The last step: puts the plans and options on your master template and the elevations in their own drawing')
+        self.done_btn.hide(); sv.addWidget(self.done_btn)
+        self.saved_lbl = QLabel(''); self.saved_lbl.setProperty('kind', 'muted'); self.saved_lbl.setWordWrap(True); sv.addWidget(self.saved_lbl)
         self.tpl_lbl = QLabel(''); self.tpl_lbl.setProperty('kind', 'muted'); self.tpl_lbl.setWordWrap(True); sv.addWidget(self.tpl_lbl)
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.addDockWidget(Qt.LeftDockWidgetArea, d); self.sheet_dock = d
@@ -347,6 +423,8 @@ class MainWindow(QMainWindow):
         for i, it in enumerate(self.plan.items):
             typ = f' ({it.area_type})' if it.area_type != 'Electrical plan' else f' ({it.elevation})' if it.elevation else ''
             w = QListWidgetItem(f'{i + 1}. {it.label}{typ}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
+        self.done_btn.setVisible(bool(self.plan.items))
+        self.saved_lbl.setText('✓ Plan saved automatically. Reopen it any time with File ▸ Open plan.' if self.plan.items else '')
         t = self.settings.master_template
         self.tpl_lbl.setText(f'Template: {Path(t).name} (change it in Settings)' if t else 'Template: none, set one in Settings')
         self.save_btn.setEnabled(True)
@@ -893,12 +971,25 @@ class MainWindow(QMainWindow):
             if r == QMessageBox.Yes: self.add_to_plan()
         if not (self.plan and self.plan.items):
             QMessageBox.information(self, 'Save drawing', 'Nothing in the plan yet. Clean an area and click Add to plan first.'); return
+        n_plan = sum(1 for it in self.plan.items if it.area_type == 'Electrical plan')
+        n_opt = sum(1 for it in self.plan.items if it.area_type == 'Option')
+        n_el = sum(1 for it in self.plan.items if is_elev(it.area_type))
+        tpl = self.settings.master_template
+        parts = []
+        if n_plan or n_opt:
+            parts.append(f'{self.plan.name}.dwg: {n_plan} plan{"s" if n_plan != 1 else ""} and {n_opt} option{"s" if n_opt != 1 else ""}, '
+                         + (f'on {Path(tpl).name}' if tpl else 'on a blank drawing (no master template in Settings)'))
+        if n_el: parts.append(f'{self.plan.name} Elevations.dwg: {n_el} elevation{"s" if n_el != 1 else ""}')
+        box = QMessageBox(QMessageBox.Question, 'Save drawing', 'This makes:\n\n' + '\n'.join('• ' + p for p in parts) +
+                          '\n\nYou can keep adding to the plan afterwards and save again.', QMessageBox.Cancel, self)
+        go = box.addButton('Save', QMessageBox.AcceptRole); box.setDefaultButton(go); box.exec()
+        if box.clickedButton() is not go: return
         try: allres = [self.plan.result(it) for it in self.plan.items]
         except Exception as e: QMessageBox.critical(self, 'Save failed', f'Could not read a saved area:\n{e}'); return
         # plans and options go on the master template; elevations go in their own drawing
         items = [it for it in self.plan.items if not is_elev(it.area_type)]
         results = [r for r, it in zip(allres, self.plan.items) if not is_elev(it.area_type)]
-        elevs = [r for r, it in zip(allres, self.plan.items) if is_elev(it.area_type)]
+        elevs = [upright(r, it) for r, it in zip(allres, self.plan.items) if is_elev(it.area_type)]
         base = None
         tpl = self.settings.master_template
         if tpl:

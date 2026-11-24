@@ -62,3 +62,22 @@ def sheet_layout(res: Result, title_h: float = TITLE_H) -> list:
         if t.kind == 'note' and t.lines and t.lines[0].startswith('SCALE'):
             t.x, t.y = X, top - 4.0; top -= 8.0
     return texts
+
+
+def turned(res: Result, deg: float) -> Result:
+    """A copy of res turned deg degrees counter-clockwise (y up): an elevation drawn on a sideways page comes out upright."""
+    deg %= 360
+    if not deg: return res
+    c, s = round(math.cos(math.radians(deg)), 12), round(math.sin(math.radians(deg)), 12)
+    def r(x, y): return (x * c - y * s, x * s + y * c)
+    out = copy.copy(res)
+    out.lines = [(role, [r(*v) for v in q], f) for role, q, f in res.lines]
+    out.arcs = [(role, *r(cx, cy), rad, a0 + deg, a1 + deg) for role, cx, cy, rad, a0, a1 in res.arcs]
+    out.texts = []
+    for t in res.texts:
+        t = copy.copy(t); t.x, t.y = r(t.x, t.y); out.texts.append(t)
+    out.symbols = []
+    for sy in res.symbols:
+        sy = copy.copy(sy); sy.x, sy.y = r(sy.x, sy.y); sy.dx, sy.dy = r(sy.dx, sy.dy); out.symbols.append(sy)
+    out.original = [[r(*v) for v in q] for q in res.original]
+    return out

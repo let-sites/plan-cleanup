@@ -207,7 +207,18 @@ class StartDialog(QDialog):
 
         # ---- page 1: plan file and builder
         p1 = QWidget(); v = QVBoxLayout(p1); v.setContentsMargins(32, 26, 32, 22)
-        t = QLabel('New plan'); t.setStyleSheet('font-size:26px;font-weight:700'); v.addWidget(t)
+        row = QHBoxLayout()
+        t = QLabel('New plan'); t.setStyleSheet('font-size:26px;font-weight:700'); row.addWidget(t); row.addStretch()
+        op = _big('Open a saved plan…'); op.setToolTip('Pick up a plan you started before'); op.clicked.connect(self.open_saved); row.addWidget(op)
+        v.addLayout(row)
+        from planclean.plan import Plan
+        recent = Plan.list_saved()[:4]
+        if recent:
+            row = QHBoxLayout(); lab = QLabel('Continue a recent plan:'); lab.setProperty('kind', 'muted'); row.addWidget(lab)
+            for name, folder, _ in recent:
+                b = QPushButton(name); b.setCursor(Qt.PointingHandCursor); b.setToolTip('Open this saved plan')
+                b.clicked.connect(lambda *_, f=folder: self._open_recent(f)); row.addWidget(b)
+            row.addStretch(); v.addLayout(row)
         sub = QLabel('Name it, add the builder\'s files, and choose the builder. Everything you clean goes into one drawing, '
                      'and the plan is saved so you can come back to it.'); sub.setProperty('kind', 'muted'); sub.setWordWrap(True); v.addWidget(sub)
         v.addWidget(_heading('1', 'Plan name (also the drawing\'s file name)'))
@@ -245,7 +256,7 @@ class StartDialog(QDialog):
         self.warn_btn = _big('Open Settings'); self.warn_btn.clicked.connect(self.fix_settings)
         row = QHBoxLayout(); row.addWidget(self.warn, 1); row.addWidget(self.warn_btn); v.addLayout(row)
         row = QHBoxLayout()
-        op = _big('Open a saved plan…'); op.clicked.connect(self.open_saved); row.addWidget(op); row.addStretch()
+        row.addStretch()
         c = _big('Cancel'); c.clicked.connect(self.reject); row.addWidget(c)
         self.next = _big('Next', primary=True); self.next.clicked.connect(self.go_next); row.addWidget(self.next)
         v.addLayout(row)
@@ -316,6 +327,9 @@ class StartDialog(QDialog):
     def choose_file(self):
         fs, _ = QFileDialog.getOpenFileNames(self, 'Choose the builder\'s files', '', 'Plans (*.pdf *.dwg)')
         for f in fs: self.set_file(f)
+
+    def _open_recent(self, folder):
+        self.open_folder = folder; self.accept()
 
     def open_saved(self):
         d = OpenPlanDialog(self)

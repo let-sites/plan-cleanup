@@ -108,12 +108,12 @@ def _placeholders(doc):
         b = doc.blocks.new('UNMAPPED'); b.add_circle((0, 0), 3); b.add_line((-3, 0), (3, 0)); b.add_line((0, -3), (0, 3))
 
 def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_note=3.0,
-              text_layer='$RoomNames', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True, base=None):
+              text_layer='$RoomNames', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True, base=None, clear=True):
     """layout=False: the texts are already placed (a combined Plan).
     base: a drawing to add to (your master template); the plan goes in empty model space above what's there."""
     out = base if base is not None else ezdxf.new('R2018', setup=True)
     if base is not None:
-        res = _moved_clear_of(res, out)
+        if clear: res = _moved_clear_of(res, out)
     else:
         out.header['$INSUNITS'] = 1  # inches
     for name, col in LAYERS:

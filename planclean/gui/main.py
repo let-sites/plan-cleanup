@@ -19,7 +19,7 @@ from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
 from planclean.result import Result
 from planclean.jobs import CleanJob, attach_to_page
-from planclean.plan import Plan, combine, reattach
+from planclean.plan import Plan, combine, reattach, find_board, on_board
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
         sv.addLayout(row)
         row = QHBoxLayout(); row.setSpacing(4)
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
+        b = QPushButton('Names…'); b.setToolTip('Plan name, project name and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
         b = QPushButton('Template…'); b.setToolTip('Choose or change the master template the drawing is built on'); b.clicked.connect(self.change_template); row.addWidget(b)
         sv.addLayout(row)
         self.tpl_lbl = QLabel(''); self.tpl_lbl.setProperty('kind', 'muted'); self.tpl_lbl.setWordWrap(True); sv.addWidget(self.tpl_lbl)
@@ -286,6 +287,8 @@ class MainWindow(QMainWindow):
         if d.exec() != QDialog.Accepted: return
         if d.open_folder: self.open_plan(d.open_folder); return
         self.plan = Plan.create(d.plan_name.text().strip(), d.builder_name(), d.paths, d.template)
+        self.plan.project = d.project.text().strip(); self.plan.elevations = [e.strip() for e in d.elevations.text().split(',') if e.strip()]
+        self.plan.save()
         self.set_builder(d.builder_name())
         self.load(d.paths, d.sheet_index); self.fill_items()
 
@@ -315,6 +318,18 @@ class MainWindow(QMainWindow):
         if not fs: return
         self.plan.add_files(fs); keep = self.pages.currentRow()
         self.load([f for f in self.plan.files if Path(f).exists()], max(keep, 0))
+
+    def edit_names(self):
+        if not self.plan: return
+        dlg = QDialog(self); dlg.setWindowTitle('Plan names'); f = QFormLayout(dlg)
+        n = QLineEdit(self.plan.name); p = QLineEdit(self.plan.project); e = QLineEdit(', '.join(self.plan.elevations))
+        e.setPlaceholderText('e.g. Modern, Traditional, Farmhouse')
+        f.addRow('Plan name', n); f.addRow('Project name', p); f.addRow('Elevation names', e)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); f.addRow(bb)
+        dlg.resize(460, 160)
+        if dlg.exec() != QDialog.Accepted: return
+        self.plan.name = n.text().strip() or self.plan.name; self.plan.project = p.text().strip()
+        self.plan.elevations = [x.strip() for x in e.text().split(',') if x.strip()]; self.plan.save(); self.fill_items()
 
     def change_template(self):
         if not self.plan: return
@@ -841,13 +856,25 @@ class MainWindow(QMainWindow):
                 try: base = dxfout.open_template(self.plan.template, oda.find_converter(self.settings.oda_path))
                 except Exception as e: QMessageBox.critical(self, 'Template', f'Could not read the master template:\n{e}'); return
         default = str(Path(self.plan.files[0]).parent / f'{self.plan.name}.dwg') if self.plan.files else f'{self.plan.name}.dwg'   # next to the builder's PDF
-        self._write(combine(results, self.settings.text_height_title), self.plan.dwg_path or default, layout=False, base=base)
+        res, clear = None, True
+        if base is not None:
+            board = find_board(base)
+            if board:
+                plans = [r for r, it in zip(results, self.plan.items) if it.area_type != 'Option']
+                opts = [r for r, it in zip(results, self.plan.items) if it.area_type == 'Option']
+                res, spill = on_board(board, plans, opts, self.settings.text_height_title, self.plan.project, self.plan.name, self.plan.elevations)
+                if spill:      # more plans than boxes: they go above the board
+                    extra = dxfout._moved_clear_of(combine(spill, self.settings.text_height_title), base)
+                    res.lines += extra.lines; res.arcs += extra.arcs; res.symbols += extra.symbols; res.texts += extra.texts
+                clear = False
+        if res is None: res = combine(results, self.settings.text_height_title)
+        self._write(res, self.plan.dwg_path or default, layout=False, base=base, clear=clear)
 
     def save_result(self):
         if not self.result: return
         self._write(self.result, 'cleaned plan.dwg')
 
-    def _write(self, res, default_name, layout=True, base=None):
+    def _write(self, res, default_name, layout=True, base=None, clear=True):
         lib = self.library()
         if lib is None:
             if QMessageBox.question(self, 'Block library', 'Your block library is not set, so symbols will be placeholders. '
@@ -863,7 +890,7 @@ class MainWindow(QMainWindow):
         missing = dxfout.write_dxf(res, str(tmp), lib, self.settings.block_for,
                                    self.settings.text_height_room, self.settings.text_height_note,
                                    self.settings.text_layer, self.settings.symbol_layer, self.settings.text_style,
-                                   self.settings.text_height_title, layout=layout, base=base)
+                                   self.settings.text_height_title, layout=layout, base=base, clear=clear)
         try:
             if want_dwg:
                 if not f.lower().endswith('.dwg'): f += '.dwg'

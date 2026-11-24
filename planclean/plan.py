@@ -33,6 +33,8 @@ class Plan:
     files: list = field(default_factory=list)
     dwg_path: str = ''           # where the drawing was last saved
     template: str = ''           # your master template for this plan ('' = start blank); read fresh at every save
+    project: str = ''            # fills PROJECT NAME on the template
+    elevations: list = field(default_factory=list)   # fill the ELEVATION labels, e.g. ['Modern', 'Traditional']
     items: list = field(default_factory=list)
     folder: str = ''
 
@@ -63,7 +65,8 @@ class Plan:
         items = [PlanItem(**{k: v for k, v in it.items() if k in PlanItem.__dataclass_fields__}) for it in d.get('items', [])]
         for it in items: it.region = tuple(it.region)
         return Plan(name=d.get('name', Path(folder).name), builder=d.get('builder', ''), files=d.get('files', []),
-                    dwg_path=d.get('dwg_path', ''), template=d.get('template', ''), items=items, folder=str(folder))
+                    dwg_path=d.get('dwg_path', ''), template=d.get('template', ''), project=d.get('project', ''),
+                    elevations=d.get('elevations', []), items=items, folder=str(folder))
 
     def save(self):
         d = asdict(self); d.pop('folder')
@@ -132,6 +135,15 @@ def _extent(res: Result, texts):
     return (min(xs), min(ys), max(xs), max(ys)) if xs else (0, 0, 0, 0)
 
 
+def _place(out, res, texts, dx, dy):
+    out.lines += [(role, [(x + dx, y + dy) for x, y in q], f) for role, q, f in res.lines]
+    out.arcs += [(role, cx + dx, cy + dy, r, a0, a1) for role, cx, cy, r, a0, a1 in res.arcs]
+    for s in res.symbols:
+        s = copy.copy(s); s.x += dx; s.y += dy; out.symbols.append(s)
+    for t in texts:
+        out.texts.append(Text(t.kind, list(t.lines), t.x + dx, t.y + dy, t.review))
+
+
 def combine(results, title_h=9.0) -> Result:
     """All areas in one drawing: side by side, left to right, tops lined up. Each area's own
     title is already set under it, so the texts come back laid out."""
@@ -139,12 +151,99 @@ def combine(results, title_h=9.0) -> Result:
     for res in results:
         texts = sheet_layout(res, title_h)
         x0, y0, x1, y1 = _extent(res, texts)
-        dx, dy = cursor - x0, -y1
-        out.lines += [(role, [(x + dx, y + dy) for x, y in q], f) for role, q, f in res.lines]
-        out.arcs += [(role, cx + dx, cy + dy, r, a0, a1) for role, cx, cy, r, a0, a1 in res.arcs]
-        for s in res.symbols:
-            s = copy.copy(s); s.x += dx; s.y += dy; out.symbols.append(s)
-        for t in texts:
-            out.texts.append(Text(t.kind, list(t.lines), t.x + dx, t.y + dy, t.review))
+        _place(out, res, texts, cursor - x0, -y1)
         cursor += (x1 - x0) + GAP
     return out
+
+
+# ---------- your MASTER FILE TEMPLATE: a board in model space with labelled boxes
+
+def _plain(raw):
+    import re
+    t = re.sub(r'\\[A-Za-z][^;\\]*;', '', raw)          # \pxqc; \fArial|b0; ...
+    return re.sub(r'[{}]', '', t).replace('\\P', ' ').strip()
+
+
+def find_board(doc):
+    """The template's boxes, found from its labels and the lines around them.
+    Returns None when the drawing isn't laid out that way."""
+    msp = doc.modelspace()
+    H, V = [], []                                         # (y, x0, x1) and (x, y0, y1)
+    def seg(a, b):
+        if abs(a[1] - b[1]) < 1e-3: H.append((a[1], min(a[0], b[0]), max(a[0], b[0])))
+        elif abs(a[0] - b[0]) < 1e-3: V.append((a[0], min(a[1], b[1]), max(a[1], b[1])))
+    for e in msp:
+        t = e.dxftype()
+        if t == 'LINE': seg((e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y))
+        elif t == 'LWPOLYLINE':
+            pts = [(p[0], p[1]) for p in e.get_points('xy')]
+            if e.closed and pts: pts.append(pts[0])
+            for a, b in zip(pts, pts[1:]): seg(a, b)
+    labels = []
+    for e in msp.query('MTEXT'):
+        raw = e.text; h = e.dxf.char_height; w = e.dxf.get('width', 0) or 0
+        x, y = e.dxf.insert.x, e.dxf.insert.y; att = e.dxf.get('attachment_point', 1)
+        col = (att - 1) % 3; row = (att - 1) // 3
+        left = x - (w / 2 if col == 1 else w if col == 2 else 0)
+        cx = left + w / 2 if (w and ('\\pxqc' in raw or col == 1)) else x
+        cy = y - h / 2 if row == 0 else y if row == 1 else y + h / 2
+        labels.append((_plain(raw).upper(), cx, cy, e))
+    def below(x, y):                                     # first box line under (x, y)
+        ys = [hy for hy, a, b in H if a - 1 <= x <= b + 1 and hy < y]
+        return max(ys) if ys else None
+    def cell(x, y):
+        l = [vx for vx, a, b in V if a - 1 <= y <= b + 1 and vx < x]; r = [vx for vx, a, b in V if a - 1 <= y <= b + 1 and vx > x]
+        d = [hy for hy, a, b in H if a - 1 <= x <= b + 1 and hy < y]; u = [hy for hy, a, b in H if a - 1 <= x <= b + 1 and hy > y]
+        if not (l and r and d and u): return None
+        return (max(l), max(d), min(r), min(u))
+    elev = sorted((l for l in labels if l[0] == 'ELEVATION'), key=lambda l: l[1])
+    cols = []
+    for _, x, y, e in elev:
+        yb = below(x, y)
+        c = cell(x, yb - 1) if yb is not None else None
+        if c: cols.append((c, e))
+    opt = next((l for l in labels if l[0] == 'OPTIONS'), None)
+    opt_box = None
+    if opt:
+        yb = below(opt[1], opt[2])
+        opt_box = cell(opt[1], yb - 1) if yb is not None else None
+    if not cols and not opt_box: return None
+    named = {k: next((l[3] for l in labels if l[0] == k), None) for k in ('PLAN NAME', 'PROJECT NAME')}
+    return dict(columns=cols, options=opt_box, plan_name=named['PLAN NAME'], project_name=named['PROJECT NAME'])
+
+
+def _set_label(e, text):
+    """Replace a label's words, keeping its formatting (e.g. centred)."""
+    import re
+    raw = e.text; m = re.match(r'^((?:\\[A-Za-z][^;\\]*;)*)', raw)
+    e.text = (m.group(1) if m else '') + text.replace('\\', '/')
+
+
+def on_board(board, plan_results, option_results, title_h=9.0, project='', plan_name='', elevations=()):
+    """Main plans centred in the boxes under the elevation names (one per elevation, in order);
+    options packed into the OPTIONS box, left to right, top to bottom. Labels filled in."""
+    out = Result(); spill = []
+    cols = board['columns']
+    for k, res in enumerate(plan_results):
+        texts = sheet_layout(res, title_h); x0, y0, x1, y1 = _extent(res, texts)
+        if k < len(cols):
+            cx0, cy0, cx1, cy1 = cols[k][0]
+            _place(out, res, texts, (cx0 + cx1) / 2 - (x0 + x1) / 2, (cy0 + cy1) / 2 - (y0 + y1) / 2)
+        else: spill.append(res)
+    box = board['options']
+    if box is None and option_results: spill += option_results
+    elif option_results:
+        bx0, by0, bx1, by1 = box; pad = 120.0
+        x, top, row_h = bx0 + pad, by1 - pad, 0.0
+        for res in option_results:
+            texts = sheet_layout(res, title_h); x0, y0, x1, y1 = _extent(res, texts)
+            w, h = x1 - x0, y1 - y0
+            if x > bx0 + pad and x + w > bx1 - pad:             # next row
+                x = bx0 + pad; top -= row_h + GAP; row_h = 0.0
+            _place(out, res, texts, x - x0, top - y1)
+            x += w + GAP; row_h = max(row_h, h)
+    if plan_name and board.get('plan_name') is not None: _set_label(board['plan_name'], plan_name.upper())
+    if project and board.get('project_name') is not None: _set_label(board['project_name'], project.upper())
+    for name, (_, e) in zip(elevations, cols):
+        if name.strip(): _set_label(e, name.strip().upper())
+    return out, spill

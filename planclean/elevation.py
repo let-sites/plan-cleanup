@@ -71,16 +71,33 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     def dbox(w):
         b = w['bb']; r = (pymupdf.Rect(b) * M)
         return (min(r.x0, r.x1), min(r.y0, r.y1), max(r.x0, r.x1), max(r.y0, r.y1))
-    keep_w, drop_w = [], []
-    for w in words:
-        t = w['n'].upper().strip()
-        (keep_w if KEEP_WORDS.search(t) else drop_w).append((t, _grow(dbox(w), 1.5)))
+    # the sheet title (and its scale line) stays; every other word is a note to take off.
+    # Title words: ELEVATION / SCALE, the big lettering under the building, and anything on their line.
+    boxes = [(w['n'].upper().strip(), dbox(w)) for w in words]
+    hs = sorted(b[3] - b[1] for _, b in boxes) or [0]
+    med = hs[len(hs) // 2]
+    def titleish(t, b):
+        if KEEP_WORDS.search(t) or re.search(r'ELEV|EVATION', t): return True
+        return b[1] >= Ybot - 2 and (b[3] - b[1]) >= 1.6 * med
+    keep = [titleish(t, b) for t, b in boxes]
+    for _ in range(2):                                   # same line, same size as a title word
+        for i, (t, b) in enumerate(boxes):
+            if keep[i]: continue
+            for j, (_, c) in enumerate(boxes):
+                if not keep[j]: continue
+                ov = min(b[3], c[3]) - max(b[1], c[1]); h = b[3] - b[1]; hc = c[3] - c[1]
+                if ov > 0.5 * min(h, hc) and 0.6 < h / max(hc, 1e-6) < 1.6 and min(abs(b[0] - c[2]), abs(c[0] - b[2])) < 4 * hc:
+                    keep[i] = True; break
+    keep_w = [(t, _grow(b, 1.5)) for (t, b), k in zip(boxes, keep) if k]
+    drop_w = [(t, _grow(b, 1.5)) for (t, b), k in zip(boxes, keep) if not k]
     numeric = [b for t, b in drop_w if re.fullmatch(r'[0-9:/ ]+|[0-9: ]*PITCH', t)]
 
     progress('Taking off notes and dimensions')
     gone = set(); masks = []
     rects = [_drect(p, M) for p in pl]
-    below = {i for i, r in enumerate(rects) if r[1] >= Ybot - 1 and r[0] >= X0 - 1.5 and r[2] <= X1 + 1.5}
+    # kept as drawn: the title's letters, the scale line and the title's underline
+    below = {i for i, r in enumerate(rects) if r[1] >= Ybot - 1 and r[0] >= X0 - 1.5 and r[2] <= X1 + 1.5 and
+             (any(_inside_frac(r, _grow(b, 1.5)) > 0.6 for _, b in keep_w) or ((r[2] - r[0]) > 40 and (r[3] - r[1]) < 3))}
     ends = []
     for i, p in enumerate(pl):
         qs = polylines(p)
@@ -105,11 +122,32 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
         r = rects[i]; size = max(r[2] - r[0], r[3] - r[1])
         if any(_inside_frac(r, m) > 0.6 for m in masks): gone.add(i); continue
         if size < 32 and any(_inside_frac(r, _grow(m, 18)) > 0.9 for m in masks): gone.add(i)
-    # 4. leaders: straight strokes that start at a removed note, and the arrowheads at their tips
+    # 4. leaders: strokes that start at a removed note and slant (or end in an arrowhead) toward the
+    #    building, plus the arrowheads at their tips. A straight siding course or post that merely
+    #    passes a note isn't one.
+    heads = [rects[i] for i, p in enumerate(pl) if is_filled(p) and pen_key(p) != 'fill #ffffff' and max(rects[i][2] - rects[i][0], rects[i][3] - rects[i][1]) < 8]
+    def slanted(p):
+        for it in p['items']:
+            a, b = it[1] * M, it[2] * M
+            dx, dy = abs(b.x - a.x), abs(b.y - a.y)
+            if dx > 1 and dy > 1 and 0.09 < dy / dx < 11: return True
+        return False
+    leader = set()
     for i, p in enumerate(pl):
         if i in gone or i in below or pen_key(p) == opk or is_filled(p): continue
         if len(p['items']) > 4 or any(it[0] != 'l' for it in p['items']): continue
-        if any(_near(pt, b, 4) for pt in ends[i] for _, b in drop_w): gone.add(i)
+        e = ends[i]
+        at_note = [pt for pt in e if any(_near(pt, b, 4) for _, b in drop_w)]
+        if not at_note: continue
+        far = [pt for pt in e if pt not in at_note]
+        if slanted(p) or any(_near(pt, h, 2.5) for pt in far for h in heads): gone.add(i); leader.add(i)
+    # the short level stub between a note and its slanted leader
+    tipsL = [pt for i in leader for pt in ends[i]]
+    for i, p in enumerate(pl):
+        if i in gone or i in below or pen_key(p) == opk or is_filled(p) or len(p['items']) != 1 or p['items'][0][0] != 'l': continue
+        r = rects[i]
+        if max(r[2] - r[0], r[3] - r[1]) < 30 and any(_near(pt, b, 4) for pt in ends[i] for _, b in drop_w) and \
+           any(abs(pt[0] - q[0]) < 1.5 and abs(pt[1] - q[1]) < 1.5 for pt in ends[i] for q in tipsL): gone.add(i)
     tips = [pt for i in gone if not is_filled(pl[i]) for pt in ends[i]]
     for i, p in enumerate(pl):
         if i in gone or i in below or not is_filled(p): continue

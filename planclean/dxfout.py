@@ -118,6 +118,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         out.header['$INSUNITS'] = 1  # inches
     for name, col in LAYERS:
         if name not in out.layers: out.layers.add(name, color=col)
+    out.layers.get('REVIEW').dxf.plot = 0        # the red check-me circles show on screen but never print
     # your own layers; when pasted into a template, the template's layer settings win
     if text_layer not in out.layers: out.layers.add(text_layer, color=1)
     if symbol_layer not in out.layers: out.layers.add(symbol_layer, color=7)

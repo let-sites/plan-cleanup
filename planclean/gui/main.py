@@ -150,7 +150,7 @@ class MainWindow(QMainWindow):
         self.view = SheetView(); self.setCentralWidget(self.view)
         self.view.regionDrawn.connect(self.on_region); self.view.clicked.connect(self.on_teach_click); self.view.itemPicked.connect(self.on_pick)
         self.view.exampleMoved.connect(self.example_moved); self.view.examplePicked.connect(self.example_picked)
-        self.view.exampleResized.connect(self.example_resized); self.view.exampleSized.connect(self.example_sized)
+        self.view.symbolMoved.connect(self.move_symbol); self.view.arrowKey.connect(self._arrow); self.view.exampleResized.connect(self.example_resized); self.view.exampleSized.connect(self.example_sized)
         for keys, step in (([QKeySequence('+'), QKeySequence('='), QKeySequence(Qt.Key_Plus)], 1), ([QKeySequence('-'), QKeySequence(Qt.Key_Minus)], -1)):
             a = QAction(self); a.setShortcuts(keys); a.setShortcutContext(Qt.WindowShortcut)
             a.triggered.connect(lambda _=False, st=step: getattr(self, '_picked_ex', None) and self.tabs.currentIndex() == 1 and self.example_resized(self._picked_ex, st))
@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
         t = QLabel('Teach this builder\'s symbols'); t.setStyleSheet('font-size:18px;font-weight:700;margin:2px 0 4px 0'); v.addWidget(t)
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
         self.scale_cb.currentIndexChanged.connect(self.on_scale); row.addWidget(self.scale_cb); v.addLayout(row)
-        self.teach_tabs = QTabWidget(); self.teach_tabs.setObjectName('pilltabs'); self.teach_tabs.setDocumentMode(True)
+        self.teach_tabs = QTabWidget(); self.teach_tabs.setObjectName('pilltabs')
         sym_w = QWidget(); sv = QVBoxLayout(sym_w); sv.setContentsMargins(0, 8, 0, 0)
         role_w = QWidget(); rv = QVBoxLayout(role_w); rv.setContentsMargins(0, 8, 0, 0)
         self.roles_lbl = QLabel('Line types on this plan'); rv.addWidget(self.roles_lbl)
@@ -1198,7 +1198,9 @@ class MainWindow(QMainWindow):
         s = getattr(self, '_sel', None)
         if s is None or not hasattr(s, 'cls'): return
         self._snap()
-        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._learn_symbol(s, by_user=True); self._after_review_change()
+        s.cls = list(SYMBOL_TYPES)[i]; self._learn_symbol(s, by_user=True)
+        if s.review: s.review = f'Changed to {sym_label(s.cls).split(" (")[0].lower()}: check it, then Looks right'
+        self._stay_on(s)           # stay on it to check its turn; Looks right moves on
 
     def delete_sel(self):
         s = getattr(self, '_sel', None)
@@ -1293,7 +1295,6 @@ class MainWindow(QMainWindow):
         self._snap()
         before = (round(s.dx, 3), round(s.dy, 3), getattr(s, 'turn', 0.0))
         turn_sym(s, 90 * step); s.user_turn = int((getattr(s, 'user_turn', 0) + 90 * step) % 360)
-        s.review = ''
         try:      # kept so the automatic turning can be checked against what people fix
             from planclean.profile import config_dir
             import json as _json, time as _time
@@ -1302,8 +1303,35 @@ class MainWindow(QMainWindow):
                                      'file': getattr(self.sheet, 'path', ''), 'page': getattr(self.sheet, 'index', 0), 'cls': s.cls,
                                      'src': list(s.src), 'before': before, 'after': (round(s.dx, 3), round(s.dy, 3), getattr(s, 'turn', 0.0))}) + '\n')
         except Exception: pass
-        self.draw_result(); self.fill_review(); self.on_pick(s, zoom=False, ask=False)
+        self._stay_on(s)
         self.statusBar().showMessage('Rotated. Press R again to keep turning, or ⌘Z to undo.', 4000)
+
+    def move_symbol(self, s, d):
+        """A symbol dragged (d: view units) or nudged: put it there, keep it selected."""
+        if not self.result: return
+        x0, y0 = self.sheet.from_view(0.0, 0.0); x1, y1 = self.sheet.from_view(d.x(), d.y())
+        a = self._to_drawing(x0, y0); b = self._to_drawing(x1, y1)
+        self._snap(); s.x += b[0] - a[0]; s.y += b[1] - a[1]
+        self._stay_on(s); self.statusBar().showMessage('Moved. ⌘Z to undo. Arrow keys nudge it (Shift: further).', 4000)
+
+    def _arrow(self, key, shift):
+        s = getattr(self, '_sel', None)
+        if not hasattr(s, 'cls'): return
+        kx, ky = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}[key]
+        self.nudge_symbol(s, kx, ky, 6.0 if shift else 1.0)
+
+    def nudge_symbol(self, s, kx, ky, inches):
+        """Arrow keys: move the selected symbol on screen by a few inches of the drawing."""
+        f = self._view_pt; o = f(0, 0); u = f(1, 0); per = math.hypot(u[0] - o[0], u[1] - o[1]) or 1.0
+        self.move_symbol(s, QPointF(kx * inches * per, ky * inches * per))
+
+    def _stay_on(self, s):
+        """Redraw after a change but keep the same item selected (its row too, if it's still on the list)."""
+        self.draw_result(); self.fill_review()
+        for r in range(self.review.count()):
+            if self.review.item(r).data(Qt.UserRole) is s:
+                self.review.blockSignals(True); self.review.setCurrentRow(r); self.review.blockSignals(False); break
+        self.on_pick(s, zoom=False, ask=False)
 
     def ok_sel(self):
         s = getattr(self, '_sel', None)

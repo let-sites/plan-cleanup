@@ -34,6 +34,8 @@ QComboBox QAbstractItemView {{ background: white; border: 1px solid {LINE}; bord
     selection-background-color: #e3f1f8; selection-color: {INK}; }}
 QTableWidget QComboBox {{ border: none; border-radius: 0; background: transparent; padding: 4px 26px 4px 8px; }}
 QTableWidget QComboBox:hover {{ background: #f4f8fb; }}
+QTabWidget#pilltabs::tab-bar {{ left: 0px; }}
+QTabWidget#pilltabs QTabBar {{ background: transparent; }}
 QTabWidget#pilltabs::pane {{ border: none; border-top: 1px solid {LINE}; background: white; top: -1px; }}
 QTabWidget#pilltabs QTabBar::tab {{ background: #eef2f5; color: {INK}; border: 1px solid {LINE}; border-bottom: none;
     border-top-left-radius: 10px; border-top-right-radius: 10px; padding: 9px 22px; margin-right: 6px; font-size: 15px; }}

@@ -16,6 +16,8 @@ class SheetView(QGraphicsView):
     exampleMoved = Signal(str, QPointF)      # a taught symbol's marker dragged to a new centre
     examplePicked = Signal(str)              # a taught symbol's marker clicked
     exampleResized = Signal(str, int)        # +1 bigger, -1 smaller
+    arrowKey = Signal(int, bool)
+    symbolMoved = Signal(object, QPointF)    # a symbol dragged in the review: how far, in view units
     exampleSized = Signal(str, float, float) # a taught symbol's box edge dragged: new half width and height, in view units
     itemPicked = Signal(object)
 
@@ -115,6 +117,8 @@ class SheetView(QGraphicsView):
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Space and not e.isAutoRepeat():
             self._space = True; self.viewport().setCursor(Qt.OpenHandCursor); return
+        if self.mode == 'review' and e.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            self.arrowKey.emit(e.key(), bool(e.modifiers() & Qt.ShiftModifier)); return      # nudge the selected symbol
         super().keyPressEvent(e)
 
     def keyReleaseEvent(self, e):
@@ -144,7 +148,10 @@ class SheetView(QGraphicsView):
         if self.mode == 'review' and e.button() == Qt.LeftButton:
             it = self.itemAt(e.position().toPoint())
             while it is not None and it.data(0) is None: it = it.parentItem()
-            if it is not None: self.itemPicked.emit(it.data(0)); return
+            if it is not None:
+                obj = it.data(0)
+                if hasattr(obj, 'cls'): self._sdrag = [obj, p, None]          # a symbol: may be dragged somewhere else
+                self.itemPicked.emit(obj); return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -154,6 +161,14 @@ class SheetView(QGraphicsView):
             self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y())); return
         if self._band is not None:
             self._band.setRect(QRectF(self._start, self.mapToScene(e.position().toPoint())).normalized()); return
+        if getattr(self, '_sdrag', None) is not None:
+            obj, start, items = self._sdrag; p = self.mapToScene(e.position().toPoint())
+            if items is None:
+                if (self.mapFromScene(p) - self.mapFromScene(start)).manhattanLength() < 4: return
+                items = [(it, it.pos()) for it in self.scene_.items() if it.data(0) is obj]
+                self._sdrag[2] = items; self.viewport().setCursor(Qt.ClosedHandCursor)
+            for it, p0 in items: it.setPos(p0 + (p - start))
+            return
         if self._drag is not None:
             m, start, pos0, how = self._drag; p = self.mapToScene(e.position().toPoint())
             if how == 'size' or how == 'sized':
@@ -170,6 +185,10 @@ class SheetView(QGraphicsView):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if getattr(self, '_sdrag', None) is not None:
+            obj, start, items = self._sdrag; self._sdrag = None; self.set_mode(self.mode)
+            if items is not None: self.symbolMoved.emit(obj, self.mapToScene(e.position().toPoint()) - start)
+            return
         if self._drag is not None:
             m, start, pos0, moved = self._drag; self._drag = None
             self.viewport().setCursor(Qt.OpenHandCursor)

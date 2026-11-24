@@ -738,7 +738,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']), shape=h.get('shape', ''))
         d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()))
         s.dx, s.dy = ux, -uy
-        if s.cls in ORIENTED and d <= 18: s.wall = d * K      # the block's insert point goes on this wall line
+        if d <= 18: s.wall = d * K      # the block's insert point goes on this wall line (kept for every type: its type can change in review)
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"
         if not s.review and s.cls in ORIENTED and d > 18: s.review = 'No wall nearby to face'
         fix = profile.turn_fix(s.cls)

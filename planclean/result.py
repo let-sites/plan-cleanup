@@ -23,7 +23,7 @@ class Sym:
 
 @dataclass
 class Text:
-    kind: str                # 'room' | 'note' | 'title' (the sheet's title)
+    kind: str                # 'room' | 'note' | 'title' (the sheet's title) | 'flag' (to fix by hand; CHECK list only)
     lines: list
     x: float
     y: float

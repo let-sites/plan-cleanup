@@ -174,6 +174,8 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             what = sym_label(s.cls).split(' (')[0]
             checks.append((s.x, s.y, 12, f'{what}: added by hand, draw its wire' if getattr(s, 'added', False) else f'{what}: {s.review}'))
     for t in (sheet_layout(res, text_title) if layout else res.texts):
+        if t.kind == 'flag':                     # to fix by hand: only in the CHECK list, never drawn
+            checks.append((t.x, t.y, 10, f'FLAG: {" ".join(t.lines)}')); continue
         if t.kind in ('room', 'title'):
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style,
                                                            'char_height': text_title if t.kind == 'title' else text_room, 'color': 7,
@@ -185,6 +187,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             checks.append((t.x, t.y, 14, f'Note "{" ".join(t.lines)}": {t.review}'))
     # a numbered list of what to double-check, beside the plan, with the same number on the spot (never prints)
     if checks:
+        checks.sort(key=lambda c: not c[3].startswith('FLAG'))     # your own flags first
         xs = [p[0] for _, pts, _ in res.lines for p in pts] or [c[0] for c in checks]
         ys = [p[1] for _, pts, _ in res.lines for p in pts] or [c[1] for c in checks]
         lx, ly = max(xs) + 36, max(ys)

@@ -431,6 +431,9 @@ class MainWindow(QMainWindow):
         self.sym_btn.clicked.connect(self.start_place_symbol); row.addWidget(self.sym_btn)
         self.note_btn = QPushButton('Add a note'); self.note_btn.setToolTip('Click on the plan where it goes, then type it (a ceiling height, say)')
         self.note_btn.clicked.connect(self.start_place_note); row.addWidget(self.note_btn)
+        self.flag_btn = QPushButton('⚑ Flag'); self.flag_btn.setToolTip('Mark something to fix later in CAD (F): click the spot, then type what. '
+                                                                       'It goes in the numbered CHECK list in the DWG, which never prints')
+        self.flag_btn.clicked.connect(self.start_place_flag); row.addWidget(self.flag_btn)
         self.heights_btn = QPushButton('Ceiling heights from another sheet…')
         self.heights_btn.setToolTip('Copy the ceiling heights from the floor plan sheet, lined up by the room names')
         self.heights_btn.clicked.connect(self.heights_from_sheet); row.addWidget(self.heights_btn); v.addLayout(row)
@@ -761,6 +764,8 @@ class MainWindow(QMainWindow):
             ex = self._example(self._picked_ex); self._picked_ex = None
             if ex: self.remove_example(ex)
             return
+        if e.key() == Qt.Key_F and not e.modifiers() and self.tabs.currentIndex() == 2 and self.result:
+            self.start_place_flag(); return
         if e.key() == Qt.Key_R and self.tabs.currentIndex() == 2 and hasattr(getattr(self, '_sel', None), 'cls'):
             self.rotate_sel(-1 if e.modifiers() & Qt.ShiftModifier else 1); return
         if e.key() == Qt.Key_Escape:
@@ -772,7 +777,7 @@ class MainWindow(QMainWindow):
 
     def on_teach_click(self, p: QPointF):
         if self.view.mode == 'place':
-            (self.place_symbol if getattr(self, '_placing', 'note') == 'symbol' else self.place_note)(p); return
+            {'symbol': self.place_symbol, 'flag': self.place_flag}.get(getattr(self, '_placing', 'note'), self.place_note)(p); return
         if self.teacher is None:
             self.teacher = Teacher(self.sheet.page, self.region, self.profile)
         x, y = self.sheet.from_view(p.x(), p.y())
@@ -1105,8 +1110,8 @@ class MainWindow(QMainWindow):
             x, y = self._view_pt(t.x, t.y)
             h_in = {'room': self.settings.text_height_room, 'title': self.settings.text_height_title}.get(t.kind, self.settings.text_height_note)
             f = QFont('Arial'); f.setPixelSize(max(2, int(round(h_in * px_per_in / 0.72))))
-            it = self.view.scene_.addSimpleText('\n'.join(t.lines), f)
-            it.setBrush(QColor('#d00000' if t.review else '#000000'))
+            it = self.view.scene_.addSimpleText(('⚑ ' if t.kind == 'flag' else '') + '\n'.join(t.lines), f)
+            it.setBrush(QColor('#e07000' if t.kind == 'flag' else '#d00000' if t.review else '#000000'))
             br = it.boundingRect(); it.setPos(x - br.width() / 2, y - br.height() / 2)
             it.setZValue(9); it.setData(0, t); self.view.overlay.append(it)
 
@@ -1125,7 +1130,9 @@ class MainWindow(QMainWindow):
             if s.review:
                 it = QListWidgetItem(f'{sym_label(s.cls).split(" (")[0]}: {s.review}'); it.setData(Qt.UserRole, s); self.review.addItem(it)
         for t in self.result.texts:
-            if t.review:
+            if t.kind == 'flag':
+                it = QListWidgetItem(f'⚑ Flag: {" ".join(t.lines)}'); it.setData(Qt.UserRole, t); self.review.addItem(it)
+            elif t.review:
                 it = QListWidgetItem(f'Note "{" ".join(t.lines)}": {t.review}'); it.setData(Qt.UserRole, t); self.review.addItem(it)
         self._sel = None
 
@@ -1152,18 +1159,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f'Selected: {sym_label(obj.cls)} (match {obj.score:.2f}) {" ".join(obj.mods)}')
         else:
             x, y = self._view_pt(obj.x, obj.y); self.highlight(x, y, zoom)
-            self.statusBar().showMessage(f'Selected note: {" ".join(obj.lines)}. Click it again to edit or delete it, or use the buttons.')
+            self.statusBar().showMessage(f'Selected {"flag" if obj.kind == "flag" else "note"}: {" ".join(obj.lines)}. Click it again to edit or delete it, or use the buttons.')
             if ask: self.edit_note(obj)
 
     def edit_note(self, obj):
         """Change a note's words, or delete it."""
-        d = QDialog(self); d.setWindowTitle('Note'); v = QVBoxLayout(d)
+        d = QDialog(self); d.setWindowTitle('Flag' if obj.kind == 'flag' else 'Note'); v = QVBoxLayout(d)
         v.addWidget(QLabel('Text (use / for a new line):'))
         ed = QLineEdit(' / '.join(obj.lines)); ed.setMinimumWidth(420); v.addWidget(ed)
         always = QCheckBox(f'When deleting: also leave this wording off future {self.profile.name if self.profile else "builder"} plans')
         always.setVisible(obj.kind == 'note' and len(obj.lines) == 1); v.addWidget(always)
         bb = QDialogButtonBox(); save = bb.addButton('Save', QDialogButtonBox.AcceptRole)
-        dele = bb.addButton('Delete note', QDialogButtonBox.DestructiveRole); bb.addButton('Cancel', QDialogButtonBox.RejectRole)
+        dele = bb.addButton('Delete flag' if obj.kind == 'flag' else 'Delete note', QDialogButtonBox.DestructiveRole); bb.addButton('Cancel', QDialogButtonBox.RejectRole)
         choice = {}
         save.clicked.connect(lambda: (choice.setdefault('a', 'save'), d.accept()))
         dele.clicked.connect(lambda: (choice.setdefault('a', 'delete'), d.accept()))
@@ -1294,6 +1301,20 @@ class MainWindow(QMainWindow):
         self.result.texts.append(Text('note', [l.strip() for l in text.split('/') if l.strip()], X, Y))
         self.draw_result(); self.statusBar().showMessage('Note added. ⌘Z to undo.', 4000)
 
+    def start_place_flag(self):
+        if not self.result: return
+        self._placing = 'flag'; self.view.set_mode('place'); self.statusBar().showMessage('Click the spot to flag. Esc to cancel.')
+
+    def place_flag(self, p):
+        """A flag: something to fix by hand in CAD later. It isn't drawn on the plan; it goes in the CHECK list."""
+        self.view.set_mode('review')
+        text, ok = QInputDialog.getText(self, 'Flag', 'What needs fixing here? (e.g. draw the arc to the fan)')
+        if not ok or not text.strip(): self.statusBar().clearMessage(); return
+        self._snap()
+        X, Y = self._to_drawing(*self.sheet.from_view(p.x(), p.y()))
+        self.result.texts.append(Text('flag', [text.strip()], X, Y))
+        self.draw_result(); self.fill_review(); self.statusBar().showMessage('Flagged. It\'s in the CHECK list when you export. ⌘Z to undo.', 4000)
+
     def heights_from_sheet(self):
         if not self.result or self.result.stats.get('kind') == 'elevation': return
         others = [sh for sh in self.sheets if sh is not self.sheet and sh.kind == 'pdf']
@@ -1398,6 +1419,8 @@ class MainWindow(QMainWindow):
     def ok_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
+        if getattr(s, 'kind', '') == 'flag':
+            self.statusBar().showMessage('A flag stays until you delete it (click it on the plan). It goes in the CHECK list in the DWG.', 5000); return
         self._snap()
         if hasattr(s, 'cls') and s.review: self._learn_symbol(s)     # it was unsure: now it knows
         s.review = ''; self._after_review_change()

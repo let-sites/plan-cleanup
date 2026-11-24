@@ -25,6 +25,8 @@ from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
 from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog
 THUMB_W = 200
+AREA_TYPES = ['Electrical plan', 'Option', 'Exterior elevation', 'Interior elevation']
+is_elev = lambda t: 'elevation' in t
 
 SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
 
@@ -150,7 +152,6 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(); row.setSpacing(4)
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
         b = QPushButton('Names…'); b.setToolTip('Plan name, project name and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
-        b = QPushButton('Template…'); b.setToolTip('Choose or change the master template the drawing is built on'); b.clicked.connect(self.change_template); row.addWidget(b)
         sv.addLayout(row)
         self.tpl_lbl = QLabel(''); self.tpl_lbl.setProperty('kind', 'muted'); self.tpl_lbl.setWordWrap(True); sv.addWidget(self.tpl_lbl)
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
@@ -176,7 +177,12 @@ class MainWindow(QMainWindow):
                                'title block and option plans. Not right? Just drag a new box.<br><br>'
                                'Pinch or use the mouse wheel to zoom. Scroll with two fingers, hold the space bar, or use the middle mouse button to move around.'))
         self.area_lbl = QLabel(''); self.area_lbl.setWordWrap(True); v.addWidget(self.area_lbl)
-        self.clean_btn = _big('Clean up this plan', primary=True); self.clean_btn.setEnabled(False)
+        row = QHBoxLayout(); row.addWidget(QLabel('This is'))
+        self.mode_cb = QComboBox(); self.mode_cb.addItem('found automatically', 'auto'); self.mode_cb.addItem('a plan or option', 'plan')
+        self.mode_cb.addItem('an elevation', 'elevation')
+        self.mode_cb.setToolTip('An elevation is recognised by its title (FRONT ELEVATION...). Pick it yourself if the title isn\'t in your box.')
+        row.addWidget(self.mode_cb, 1); v.addLayout(row)
+        self.clean_btn = _big('Clean up this area', primary=True); self.clean_btn.setEnabled(False)
         self.clean_btn.clicked.connect(self.clean_clicked); v.addWidget(self.clean_btn)
         self.prog = QWidget(); pv = QVBoxLayout(self.prog); pv.setContentsMargins(0, 8, 0, 0)
         self.prog_lbl = QLabel(''); pv.addWidget(self.prog_lbl)
@@ -237,8 +243,9 @@ class MainWindow(QMainWindow):
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
         row = QHBoxLayout(); row.addWidget(QLabel('This area is'))
-        self.area_type = QComboBox(); self.area_type.addItems(['Electrical plan', 'Option']); row.addWidget(self.area_type, 1)
-        row.addWidget(QLabel('for')); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
+        self.area_type = QComboBox(); self.area_type.addItems(AREA_TYPES); row.addWidget(self.area_type, 1)
+        self.area_type.activated.connect(self.area_type_changed)
+        self.for_lbl = QLabel('for'); row.addWidget(self.for_lbl); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
                      'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 1); v.addLayout(row)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area, or click <b>Save drawing</b> at the top.'); self.add_hint.setProperty('kind', 'muted')
@@ -288,7 +295,7 @@ class MainWindow(QMainWindow):
         if self.profile and d.builder.findText(self.profile.name) > 0: d.builder.setCurrentIndex(d.builder.findText(self.profile.name))
         if d.exec() != QDialog.Accepted: return
         if d.open_folder: self.open_plan(d.open_folder); return
-        self.plan = Plan.create(d.plan_name.text().strip(), d.builder_name(), d.paths, d.template)
+        self.plan = Plan.create(d.plan_name.text().strip(), d.builder_name(), d.paths)
         self.plan.project = d.project.text().strip(); self.plan.elevations = [e.strip() for e in d.elevations.text().split(',') if e.strip()]
         self.plan.save()
         self.set_builder(d.builder_name())
@@ -333,13 +340,6 @@ class MainWindow(QMainWindow):
         self.plan.name = n.text().strip() or self.plan.name; self.plan.project = p.text().strip()
         self.plan.elevations = [x.strip() for x in e.text().split(',') if x.strip()]; self.plan.save(); self.fill_items()
 
-    def change_template(self):
-        if not self.plan: return
-        f, _ = QFileDialog.getOpenFileName(self, 'Choose the master template (Cancel = start blank)', str(Path(self.plan.template).parent) if self.plan.template else '',
-                                           'Drawings (*.dwg *.dxf)')
-        if not f and self.plan.template and QMessageBox.question(self, 'Template', 'Stop using a template, so the drawing starts blank?') != QMessageBox.Yes: return
-        self.plan.template = f or ''; self.plan.save(); self.fill_items()
-
     # ---------- the plan's areas
     def fill_items(self):
         self.items.clear()
@@ -347,7 +347,8 @@ class MainWindow(QMainWindow):
         for i, it in enumerate(self.plan.items):
             typ = f' ({it.area_type})' if it.area_type != 'Electrical plan' else f' ({it.elevation})' if it.elevation else ''
             w = QListWidgetItem(f'{i + 1}. {it.label}{typ}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
-        self.tpl_lbl.setText(f'Template: {Path(self.plan.template).name}' if self.plan.template else 'Template: none (blank drawing)')
+        t = self.settings.master_template
+        self.tpl_lbl.setText(f'Template: {Path(t).name} (change it in Settings)' if t else 'Template: none, set one in Settings')
         self.save_btn.setEnabled(True)
         self.setWindowTitle(f'Plan Cleanup {__version__} — {self.plan.name}'); self.update_info()
 
@@ -371,6 +372,7 @@ class MainWindow(QMainWindow):
                           self.elev_cb.currentData() or '')
             msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Save drawing.'
         self.editing = None; self.fill_items(); self.redraw_box(); self.statusBar().showMessage(msg, 8000)
+        QTimer.singleShot(0, self.view.fit)            # back out to the whole page for the next box
 
     def open_item(self, i):
         it = self.plan.items[i]; si = self._sheet_index(it.file, it.page)
@@ -379,6 +381,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Redo area', f'The file this area came from isn\'t in the plan any more:\n{it.file}\n\nUse Add files… to add it again.'); return
         self.pages.setCurrentRow(si); self.on_page(si)
         self.region = tuple(it.region); self.editing = i
+        (ax, ay), (bx, by) = self.sheet.to_view(it.region[0], it.region[1]), self.sheet.to_view(it.region[2], it.region[3])
+        self.view.show_region(QRectF(min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)))
         res = reattach(self.plan.result(it), it.kind, self.profile, it.region)
         self.on_cleaned(res)
         self.statusBar().showMessage(f'Redoing area {i + 1}. Fix it up, then click Update in plan. Redraw the box to clean it again.')
@@ -560,22 +564,23 @@ class MainWindow(QMainWindow):
             if rows and self.profile: self._save_quietly()
 
     # ---------- clean + review
-    def run_clean(self):
+    def run_clean(self, mode=None):
         if not (self.sheet and self.region and self.profile):
             missing = ('a plan (click New cleanup)' if not self.sheet else 'a builder (click New cleanup)' if not self.profile
                        else 'a box around the plan (drag one on the sheet)')
             QMessageBox.information(self, 'Not ready', f'Still needed: {missing}.'); return
         prof = self.profile
         if self.sheet.kind == 'pdf':
-            if not prof.symbols: QMessageBox.information(self, 'Builder setup', 'Teach at least one symbol in step 2 first.'); return
-            self.run_pdf_job(self.sheet.doc.name, self.sheet.index, self.region, prof); return
+            mode = mode or self.mode_cb.currentData()
+            if not prof.symbols and mode != 'elevation': QMessageBox.information(self, 'Builder setup', 'Teach at least one symbol in step 2 first.'); return
+            self.run_pdf_job(self.sheet.doc.name, self.sheet.index, self.region, prof, mode); return
         else:
             doc, region = self.sheet.doc, self.region
             fn = lambda prog: dwgin.clean_dwg(doc, region, prof, progress=prog)
         run_in_thread(self, fn, self.on_cleaned, 'Cleaning the plan…')
 
-    def run_pdf_job(self, path, index, region, prof):
-        job = CleanJob(path, index, region, prof)
+    def run_pdf_job(self, path, index, region, prof, mode='auto'):
+        job = CleanJob(path, index, region, prof, mode)
         self.tabs.setCurrentIndex(0); self.clean_btn.setEnabled(False); self.prog.show()
         state = {'step': 'Starting'}
         timer = QTimer(self)
@@ -605,15 +610,30 @@ class MainWindow(QMainWindow):
         self.summary.setText(f'<b>{len(res.symbols)} symbols:</b> {parts}.<br><b>{sum(1 for t in res.texts if t.kind == "room")} room names</b>, '
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
         self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
+        self.save_btn.setEnabled(True)
+        QTimer.singleShot(0, self.view.fit)            # zoom to the box you drew
         self.add_btn.setText('Update in plan' if self.editing is not None else 'Add to plan')
-        if self.editing is not None and self.plan: guess = self.plan.items[self.editing].area_type
+        elev = res.stats.get('kind') == 'elevation'
+        if self.editing is not None and self.plan and is_elev(self.plan.items[self.editing].area_type) == elev: guess = self.plan.items[self.editing].area_type
+        elif elev: guess = 'Interior elevation' if is_elev(self.area_type.currentText()) and 'Interior' in self.area_type.currentText() else 'Exterior elevation'
         else: guess = 'Option' if any(t.kind == 'title' and 'OPT' in ' '.join(t.lines) for t in res.texts) else 'Electrical plan'
         if self.area_type.findText(guess) >= 0: self.area_type.setCurrentText(guess)
+        self.for_lbl.setVisible(not elev); self.elev_cb.setVisible(not elev)
+        if elev:
+            self.summary.setText(f'<b>Elevation.</b> {res.stats.get("removed", 0)} pieces of notes, dimensions, pitch marks and leaders taken off. '
+                                 'The building and its title are kept. Turn on <i>Show what was removed</i> to check.')
         self.elev_cb.clear(); self.elev_cb.addItem('first free elevation', '')
         for n in (self.plan.elevations if self.plan else []): self.elev_cb.addItem(n, n)
         if self.editing is not None and self.plan: ev = self.plan.items[self.editing].elevation
         else: ev = self.guess_elevation(res)
         i = self.elev_cb.findData(ev); self.elev_cb.setCurrentIndex(max(i, 0))
+
+    def area_type_changed(self, _=None):
+        """Switching between a plan and an elevation cleans the box again the other way."""
+        if not self.result: return
+        want = is_elev(self.area_type.currentText())
+        if want != (self.result.stats.get('kind') == 'elevation') and self.sheet and self.sheet.kind == 'pdf':
+            self.run_clean('elevation' if want else 'plan')
 
     def guess_elevation(self, res):
         """An elevation name written inside the box (e.g. 'ELEVATION B - MODERN') picks the elevation."""
@@ -635,8 +655,6 @@ class MainWindow(QMainWindow):
             if n.upper() not in ('PLAN', 'ELECTRICAL', 'ELECTRICAL PLAN'):
                 self.plan.elevations.append(n); self.plan.save(); self.elev_cb.addItem(n, n); return n
         return ''
-        self.save_btn.setEnabled(True)
-        if self.view.region_item is not None: self.view.fitInView(self.view.region_item, Qt.KeepAspectRatio)
 
     def _hide_orig_btn(self):
         self.orig_btn.blockSignals(True); self.orig_btn.setChecked(False); self.orig_btn.setText('Show original  (O)')
@@ -863,6 +881,7 @@ class MainWindow(QMainWindow):
         if d.exec():
             old = self.settings.block_library; d.apply()
             if self.settings.block_library != old: self._lib = None; self._shapes = None
+            if self.plan: self.fill_items()
 
     def save_plan_dwg(self):
         """Write every area in the plan into one drawing."""
@@ -874,36 +893,66 @@ class MainWindow(QMainWindow):
             if r == QMessageBox.Yes: self.add_to_plan()
         if not (self.plan and self.plan.items):
             QMessageBox.information(self, 'Save drawing', 'Nothing in the plan yet. Clean an area and click Add to plan first.'); return
-        try: results = [self.plan.result(it) for it in self.plan.items]
+        try: allres = [self.plan.result(it) for it in self.plan.items]
         except Exception as e: QMessageBox.critical(self, 'Save failed', f'Could not read a saved area:\n{e}'); return
+        # plans and options go on the master template; elevations go in their own drawing
+        items = [it for it in self.plan.items if not is_elev(it.area_type)]
+        results = [r for r, it in zip(allres, self.plan.items) if not is_elev(it.area_type)]
+        elevs = [r for r, it in zip(allres, self.plan.items) if is_elev(it.area_type)]
         base = None
-        if self.plan.template:
-            if not Path(self.plan.template).exists():
-                if QMessageBox.question(self, 'Template not found', f'The master template isn\'t where it was:\n{self.plan.template}\n\n'
-                                        'Save on a blank drawing instead? (No: choose it again with Template… on the left.)') != QMessageBox.Yes: return
+        tpl = self.settings.master_template
+        if tpl:
+            if not Path(tpl).exists():
+                if QMessageBox.question(self, 'Template not found', f'The master template isn\'t where Settings says:\n{tpl}\n\n'
+                                        'Save on a blank drawing instead? (No: fix it in Settings first.)') != QMessageBox.Yes: return
             else:
-                try: base = dxfout.open_template(self.plan.template, oda.find_converter(self.settings.oda_path))
+                try: base = dxfout.open_template(tpl, oda.find_converter(self.settings.oda_path))
                 except Exception as e: QMessageBox.critical(self, 'Template', f'Could not read the master template:\n{e}'); return
         default = str(Path(self.plan.files[0]).parent / f'{self.plan.name}.dwg') if self.plan.files else f'{self.plan.name}.dwg'   # next to the builder's PDF
         res, clear = None, True
         if base is not None:
             board = find_board(base)
             if board:
-                plans = [(r, it.elevation) for r, it in zip(results, self.plan.items) if it.area_type != 'Option']
-                opts = [r for r, it in zip(results, self.plan.items) if it.area_type == 'Option']
+                plans = [(r, it.elevation) for r, it in zip(results, items) if it.area_type != 'Option']
+                opts = [r for r, it in zip(results, items) if it.area_type == 'Option']
                 res, spill = on_board(board, plans, opts, self.settings.text_height_title, self.plan.project, self.plan.name, self.plan.elevations)
                 if spill:      # more plans than boxes: they go above the board
                     extra = dxfout._moved_clear_of(combine(spill, self.settings.text_height_title), base)
                     res.lines += extra.lines; res.arcs += extra.arcs; res.symbols += extra.symbols; res.texts += extra.texts
                 clear = False
-        if res is None: res = combine(results, self.settings.text_height_title)
-        self._write(res, self.plan.dwg_path or default, layout=False, base=base, clear=clear)
+        saved, notes = [], []
+        main_path = None
+        if results:
+            if res is None: res = combine(results, self.settings.text_height_title)
+            out = self._write(res, self.plan.dwg_path or default, layout=False, base=base, clear=clear, quiet=True)
+            if not out: return
+            main_path, missing = out; saved.append(Path(main_path).name)
+            self.plan.dwg_path = main_path; self.plan.save()
+            if missing: notes.append('These blocks were not in your library, so placeholders were used: ' + ', '.join(missing))
+        if elevs:
+            # a blank drawing with the template's layers, text and dimension styles
+            ebase = None
+            if base is not None:     # read fresh: the plans drawing changed the one in memory
+                ebase = dxfout.blank_like(dxfout.open_template(tpl, oda.find_converter(self.settings.oda_path)))
+            stem = Path(main_path).with_suffix('') if main_path else Path(default).with_suffix('')
+            epath = f'{stem} Elevations{Path(main_path or default).suffix}'
+            out = self._write(combine(elevs, self.settings.text_height_title), epath, layout=False, base=ebase, clear=False,
+                              quiet=True, path=epath if main_path else None)
+            if not out: return
+            saved.append(Path(out[0]).name)
+        if saved:
+            exe = oda.find_converter(self.settings.oda_path)
+            msg = 'Saved ' + ' and '.join(saved) + '.'
+            if notes: msg += '\n\n' + '\n'.join(notes)
+            if not exe: msg += '\n\nInstall the free ODA File Converter to save DWG directly.'
+            QMessageBox.information(self, 'Saved', msg)
 
     def save_result(self):
         if not self.result: return
         self._write(self.result, 'cleaned plan.dwg')
 
-    def _write(self, res, default_name, layout=True, base=None, clear=True):
+    def _write(self, res, default_name, layout=True, base=None, clear=True, quiet=False, path=None):
+        """Write one drawing. path: save there without asking. Returns (path, missing blocks), or None."""
         lib = self.library()
         if lib is None:
             if QMessageBox.question(self, 'Block library', 'Your block library is not set, so symbols will be placeholders. '
@@ -912,8 +961,9 @@ class MainWindow(QMainWindow):
         exe = oda.find_converter(self.settings.oda_path)
         flt = 'AutoCAD drawing (*.dwg);;DXF (*.dxf)' if exe else 'DXF (*.dxf)'
         if not exe: default_name = str(Path(default_name).with_suffix('.dxf'))
-        f, chosen = QFileDialog.getSaveFileName(self, 'Save drawing', default_name, flt)
-        if not f: return
+        if path: f, chosen = (str(Path(path).with_suffix('.dxf')) if not exe else path), ('dwg' if exe else 'dxf')
+        else: f, chosen = QFileDialog.getSaveFileName(self, 'Save drawing', default_name, flt)
+        if not f: return None
         want_dwg = f.lower().endswith('.dwg') or (exe and 'dwg' in chosen and not f.lower().endswith('.dxf'))
         tmp = Path(tempfile.mkdtemp()) / 'cleaned.dxf'
         missing = dxfout.write_dxf(res, str(tmp), lib, self.settings.block_for,
@@ -927,8 +977,8 @@ class MainWindow(QMainWindow):
             else:
                 import shutil; shutil.copy(tmp, f)
         except Exception as e:
-            QMessageBox.critical(self, 'Save failed', str(e)); return
-        if self.plan and not layout: self.plan.dwg_path = f; self.plan.save()
+            QMessageBox.critical(self, 'Save failed', str(e)); return None
+        if quiet: return f, missing
         msg = f'Saved {Path(f).name}.'
         if missing: msg += '\n\nThese blocks were not in your library, so placeholders were used: ' + ', '.join(missing)
         if not exe: msg += '\n\nInstall the free ODA File Converter to save DWG directly.'

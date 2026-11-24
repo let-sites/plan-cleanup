@@ -9,12 +9,21 @@ import multiprocessing as mp
 import queue, time, traceback
 
 
-def _clean_pdf_worker(pdf_path, page_index, region, profile, q):
+def _clean_pdf_worker(pdf_path, page_index, region, profile, q, mode='auto'):
+    """mode: 'auto' (an elevation is recognised by its title), 'plan' or 'elevation'."""
     try:
         import pymupdf
         from planclean.engine import clean_pdf
+        from planclean import elevation
         page = pymupdf.open(pdf_path)[page_index]
-        res = clean_pdf(page, region, profile, progress=lambda m: q.put(('progress', m)))
+        prog = lambda m: q.put(('progress', m))
+        if mode == 'auto':
+            prog('Is it a plan or an elevation?')
+            mode = 'elevation' if elevation.looks_like_elevation(page, region) else 'plan'
+        if mode == 'elevation':
+            res = elevation.clean_elevation(page, region, profile.inches_per_pt, progress=prog)
+        else:
+            res = clean_pdf(page, region, profile, progress=prog); res.stats['kind'] = 'plan'
         res.to_page = None                      # functions can't cross processes
         q.put(('done', res))
     except Exception:
@@ -29,8 +38,8 @@ def attach_to_page(res, profile, region):
 
 class CleanJob:
     """Start with start(); call poll() regularly. poll() returns a list of (kind, payload)."""
-    def __init__(self, pdf_path, page_index, region, profile):
-        self.args = (pdf_path, page_index, tuple(region), profile)
+    def __init__(self, pdf_path, page_index, region, profile, mode='auto'):
+        self.args = (pdf_path, page_index, tuple(region), profile); self.mode = mode
         self.ctx = mp.get_context('spawn')
         self.q = self.ctx.Queue()
         self.proc = None
@@ -38,7 +47,7 @@ class CleanJob:
         self.finished = False
 
     def start(self):
-        self.proc = self.ctx.Process(target=_clean_pdf_worker, args=(*self.args, self.q), daemon=True)
+        self.proc = self.ctx.Process(target=_clean_pdf_worker, args=(*self.args, self.q, self.mode), daemon=True)
         self.proc.start(); self.t0 = time.time()
 
     def elapsed(self):

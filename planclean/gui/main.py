@@ -132,7 +132,11 @@ class MainWindow(QMainWindow):
         self.view = SheetView(); self.setCentralWidget(self.view)
         self.view.regionDrawn.connect(self.on_region); self.view.clicked.connect(self.on_teach_click); self.view.itemPicked.connect(self.on_pick)
         self.view.exampleMoved.connect(self.example_moved); self.view.examplePicked.connect(self.example_picked)
-        self.view.exampleResized.connect(self.example_resized)
+        self.view.exampleResized.connect(self.example_resized); self.view.exampleSized.connect(self.example_sized)
+        for keys, step in (([QKeySequence('+'), QKeySequence('='), QKeySequence(Qt.Key_Plus)], 1), ([QKeySequence('-'), QKeySequence(Qt.Key_Minus)], -1)):
+            a = QAction(self); a.setShortcuts(keys); a.setShortcutContext(Qt.WindowShortcut)
+            a.triggered.connect(lambda _=False, st=step: getattr(self, '_picked_ex', None) and self.tabs.currentIndex() == 1 and self.example_resized(self._picked_ex, st))
+            self.addAction(a)
         self._toolbar(); self._docks(); self._menus()
         # big on/off switch for the builder's original drawing, pinned to the corner of the plan
         self.orig_btn = QPushButton('Show original  (O)'); self.orig_btn.setCheckable(True); self.orig_btn.setObjectName('origbtn')
@@ -262,6 +266,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_area(), 'Plan area')
         self.tabs.addTab(self._tab_setup(), 'Builder setup')
         self.tabs.addTab(self._tab_review(), 'Review')
+        self.tabs.currentChanged.connect(lambda i: i == 1 and self.region and self.view.mode != 'teach' and (self.view.set_mode('teach'), self.show_ex_markers()))
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(self.tabs); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.addDockWidget(Qt.RightDockWidgetArea, d)
 
@@ -302,10 +307,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(); back = QPushButton('← Back'); back.setToolTip('Leave teaching and go back to where you were')
         back.clicked.connect(self.close_teach); row.addWidget(back); row.addStretch(); v.addLayout(row)
         v.addWidget(self._step(0, 'Teach this builder\'s symbols', 'Show the app what this builder\'s symbols look like: '
-                               'click <b>Click a symbol to teach it</b>, click one of each kind of symbol on the plan and say what it is. '
+                               'with the crosshair, click one of each kind of symbol on the plan and say what it is. '
                                'You only do this once per builder. Click <b>← Back</b> any time to leave.'))
-        v.addWidget(self._help('Do this once per builder. Tell the tool what each line type is, then click one example of each '
-                               'symbol and choose what it is. Save when done; later plans from this builder skip this step.'))
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
         self.scale_cb.currentIndexChanged.connect(self.on_scale); row.addWidget(self.scale_cb); v.addLayout(row)
         self.roles_lbl = QLabel('Line types on this plan'); v.addWidget(self.roles_lbl)
@@ -326,9 +329,10 @@ class MainWindow(QMainWindow):
         a = QAction(self.examples); a.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
         a.setShortcutContext(Qt.WidgetShortcut); a.triggered.connect(self.remove_example); self.examples.addAction(a)
         hint = QLabel('Symbols you\'ve taught show on the plan as green boxes. Hover one for the hand, then <b>drag</b> it to centre it, '
-                      'or click it and press <b>+</b> / <b>−</b> to make its box bigger or smaller, or <b>Delete</b> to remove it. Click anywhere else to teach a new one.'); hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
+                      'drag its <b>edge</b> to make the box bigger or smaller (or click it and press + / −), or click it and press <b>Delete</b>. '
+                      'Click any symbol on the plan (crosshair) to teach a new one.'); hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
         row = QHBoxLayout()
-        self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); row.addWidget(self.teach_btn)
+        self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); self.teach_btn.hide()
         b = QPushButton('Delete selected'); b.clicked.connect(lambda: self.remove_example()); row.addWidget(b); v.addLayout(row)
         b = QPushButton('Builder settings (what to show)…'); b.clicked.connect(self.builder_settings); v.addWidget(b)
         b = _big('Done: save and clean the area', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
@@ -773,8 +777,8 @@ class MainWindow(QMainWindow):
         """Show a taught symbol on the plan (when it was taught on this sheet), sized to what it captured."""
         w = getattr(ex, 'where', None) or []
         if len(w) < 4 or not self.sheet or w[0] != self.sheet.path or w[1] != getattr(self.sheet, 'index', 0): return
-        (vx, vy), (vx2, _) = self.sheet.to_view(w[2], w[3]), self.sheet.to_view(w[2] + ex.half, w[3])
-        hv = abs(vx2 - vx) or abs(self.sheet.to_view(w[2], w[3] + ex.half)[1] - vy)
+        (vx, vy), (vx2, vy2) = self.sheet.to_view(w[2], w[3]), self.sheet.to_view(w[2] + ex.half, w[3])
+        hv = math.hypot(vx2 - vx, vy2 - vy)                       # the sheet may be turned: any direction
         self.view.add_ex_marker(ex.id, vx, vy, '#2e9e5b', sym_label(ex.cls).split(' (')[0], hv)
 
     def show_ex_markers(self):
@@ -806,9 +810,19 @@ class MainWindow(QMainWindow):
     def example_resized(self, eid, step):
         old = self._example(eid)
         if old is None or not self.region or len(getattr(old, 'where', []) or []) < 4: return
-        half = min(24.0, max(3.0, old.half + 0.75 * step))
+        half = min(30.0, max(3.0, old.half + 0.75 * step))
         self._replace_example(old, old.where[2], old.where[3], half)
         self.statusBar().showMessage(f'Box {"bigger" if step > 0 else "smaller"}, saved.', 3000)
+
+    def example_sized(self, eid, half_view):
+        old = self._example(eid)
+        if old is None or not self.region or len(getattr(old, 'where', []) or []) < 4: return
+        x, y = old.where[2], old.where[3]
+        (vx, vy), (vx2, vy2) = self.sheet.to_view(x, y), self.sheet.to_view(x + 1, y)
+        per = math.hypot(vx2 - vx, vy2 - vy) or 1.0
+        half = min(30.0, max(3.0, half_view / per))
+        self._replace_example(old, x, y, half); self.view.select_ex_marker(eid); self._picked_ex = eid
+        self.statusBar().showMessage('Box resized and saved.', 3000)
 
     def example_picked(self, eid):
         r = self._example_rowof(eid)

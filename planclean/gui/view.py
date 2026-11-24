@@ -15,7 +15,8 @@ class SheetView(QGraphicsView):
     clicked = Signal(QPointF)
     exampleMoved = Signal(str, QPointF)      # a taught symbol's marker dragged to a new centre
     examplePicked = Signal(str)              # a taught symbol's marker clicked
-    exampleResized = Signal(str, int)        # scrolled over a taught symbol: +1 bigger, -1 smaller
+    exampleResized = Signal(str, int)        # +1 bigger, -1 smaller
+    exampleSized = Signal(str, float)        # a taught symbol's box edge dragged: new half size, in view units
     itemPicked = Signal(object)
 
     def __init__(self):
@@ -131,6 +132,9 @@ class SheetView(QGraphicsView):
             self._band = self.scene_.addRect(QRectF(p, p), pen, QBrush(QColor(74, 144, 184, 35)))
             return
         if self.mode == 'teach' and e.button() == Qt.LeftButton:
+            m = self._ex_edge(e.position().toPoint())
+            if m is not None:                                    # grab a box edge: resize
+                self._drag = (m, p, m.pos(), 'size'); self.viewport().setCursor(Qt.SizeFDiagCursor); return
             m = self._ex_at(e.position().toPoint())
             if m is not None:                                    # grab a taught symbol
                 self._drag = (m, p, m.pos(), False); self.viewport().setCursor(Qt.ClosedHandCursor); return
@@ -149,17 +153,24 @@ class SheetView(QGraphicsView):
         if self._band is not None:
             self._band.setRect(QRectF(self._start, self.mapToScene(e.position().toPoint())).normalized()); return
         if self._drag is not None:
-            m, start, pos0, _ = self._drag; p = self.mapToScene(e.position().toPoint())
+            m, start, pos0, how = self._drag; p = self.mapToScene(e.position().toPoint())
+            if how == 'size' or how == 'sized':
+                h = max(2.0, abs(p.x() - pos0.x()), abs(p.y() - pos0.y()))
+                m.setRect(-h, -h, 2 * h, 2 * h); self._drag = (m, start, pos0, 'sized'); return
             m.setPos(pos0 + (p - start)); self._drag = (m, start, pos0, True); return
         if self.mode == 'teach':
-            self.viewport().setCursor(Qt.OpenHandCursor if self._ex_at(e.position().toPoint()) is not None else Qt.CrossCursor)
+            pos = e.position().toPoint()
+            self.viewport().setCursor(Qt.SizeFDiagCursor if self._ex_edge(pos) is not None else
+                                      Qt.OpenHandCursor if self._ex_at(pos) is not None else Qt.CrossCursor)
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._drag is not None:
             m, start, pos0, moved = self._drag; self._drag = None
             self.viewport().setCursor(Qt.OpenHandCursor)
-            if moved and (m.pos() - pos0).manhattanLength() > 0.5: self.exampleMoved.emit(m.data(1), m.pos())
+            if moved == 'sized': self.exampleSized.emit(m.data(1), m.rect().width() / 2); return
+            if moved == 'size': self.examplePicked.emit(m.data(1)); return
+            if moved is True and (m.pos() - pos0).manhattanLength() > 0.5: self.exampleMoved.emit(m.data(1), m.pos())
             else: self.examplePicked.emit(m.data(1))
             return
         if getattr(self, '_pan', None) is not None:
@@ -213,6 +224,15 @@ class SheetView(QGraphicsView):
     def select_ex_marker(self, eid):
         for k, it in self.ex_markers.items():
             p = it.pen(); p.setColor(QColor('#e0a100' if k == eid else '#2e9e5b')); p.setWidthF(3 if k == eid else 2); it.setPen(p)
+
+    def _ex_edge(self, pos):
+        """A taught symbol whose box edge is under the mouse (within a few screen pixels): grab it to resize."""
+        sp = self.mapToScene(pos); tol = 5 / max(self.transform().m11(), 1e-6)
+        for it in self.ex_markers.values():
+            r = it.rect(); c = it.pos(); h = r.width() / 2
+            dx, dy = abs(sp.x() - c.x()), abs(sp.y() - c.y())
+            if max(dx, dy) <= h + tol and max(dx, dy) >= h - tol: return it
+        return None
 
     def _ex_at(self, pos):
         for it in self.items(pos):

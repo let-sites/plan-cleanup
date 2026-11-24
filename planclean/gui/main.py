@@ -315,12 +315,17 @@ class MainWindow(QMainWindow):
         b = QPushButton('Clear highlight'); b.setToolTip('Stop highlighting the line type (or press Esc, or click the row again)')
         b.clicked.connect(lambda: self.roles.clearSelection()); v.addWidget(b, 0, Qt.AlignLeft)
         self.sym_lbl = QLabel('Symbol examples'); v.addWidget(self.sym_lbl)
-        self.examples = QTableWidget(0, 2); self.examples.setHorizontalHeaderLabels(['Builder symbol', 'Is a…'])
+        self.examples = QTableWidget(0, 3); self.examples.setHorizontalHeaderLabels(['Builder symbol', 'Is a…', ''])
         self.examples.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); self.examples.verticalHeader().hide()
-        self.examples.setIconSize(QPixmap(48, 48).size()); v.addWidget(self.examples, 2)
+        self.examples.setSelectionBehavior(QTableWidget.SelectRows)
+        self.examples.setIconSize(QPixmap(56, 56).size()); v.addWidget(self.examples, 2)
+        a = QAction(self.examples); a.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
+        a.setShortcutContext(Qt.WidgetShortcut); a.triggered.connect(self.remove_example); self.examples.addAction(a)
+        hint = QLabel('Red cross = the centre it learned. Off? Click <b>Re-centre</b> on that row, then click the symbol\'s centre again. '
+                      '<b>×</b> deletes it.'); hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
         row = QHBoxLayout()
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); row.addWidget(self.teach_btn)
-        b = QPushButton('Remove selected'); b.clicked.connect(self.remove_example); row.addWidget(b); v.addLayout(row)
+        b = QPushButton('Delete selected'); b.clicked.connect(lambda: self.remove_example()); row.addWidget(b); v.addLayout(row)
         b = QPushButton('Builder settings (what to show)…'); b.clicked.connect(self.builder_settings); v.addWidget(b)
         b = _big('Done: save and clean the area', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
         return w
@@ -648,12 +653,15 @@ class MainWindow(QMainWindow):
 
     def _example_row(self, ex):
         r = self.examples.rowCount(); self.examples.insertRow(r)
-        img = 255 - ex.image().clip(0, 255).astype('uint8')
-        q = QImage(img.data, img.shape[1], img.shape[0], img.strides[0], QImage.Format_Grayscale8).copy()
-        it = QTableWidgetItem(); it.setIcon(QIcon(QPixmap.fromImage(q))); it.setData(Qt.UserRole, ex.id); self.examples.setItem(r, 0, it)
-        self.examples.setRowHeight(r, 52)
+        it = QTableWidgetItem(); it.setIcon(self._example_icon(ex)); it.setData(Qt.UserRole, ex.id); self.examples.setItem(r, 0, it)
+        self.examples.setRowHeight(r, 60)
+        btns = QWidget(); h = QHBoxLayout(btns); h.setContentsMargins(2, 2, 2, 2); h.setSpacing(4)
+        rc = QPushButton('Re-centre'); rc.setToolTip('Click the symbol\'s centre on the plan again to fix this example')
+        rc.clicked.connect(lambda _=False, e=ex: self.recentre_example(e)); h.addWidget(rc)
+        x = QPushButton('×'); x.setFixedWidth(30); x.setToolTip('Delete this example'); x.clicked.connect(lambda _=False, e=ex: self.remove_example(e)); h.addWidget(x)
+        self.examples.setCellWidget(r, 2, btns); self.examples.resizeColumnToContents(2)
         cb = QComboBox(); keys = list(SYMBOL_TYPES); cb.addItems([SYMBOL_TYPES[k][0] for k in keys]); cb.setCurrentIndex(keys.index(ex.cls) if ex.cls in keys else 0)
-        cb.currentIndexChanged.connect(lambda i, e=ex: setattr(e, 'cls', keys[i])); self.examples.setCellWidget(r, 1, cb)
+        cb.currentIndexChanged.connect(lambda i, e=ex: (setattr(e, 'cls', keys[i]), self._save_quietly())); self.examples.setCellWidget(r, 1, cb)
 
     def on_role_select(self):
         if not self.sheet or self.sheet.kind != 'pdf' or not self.region: return
@@ -688,6 +696,7 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
             if self.roles.selectedItems(): self.roles.clearSelection(); return
+            self._recentre = None
             self.view.set_mode('review' if self.result else 'pan'); self.statusBar().clearMessage()
         else: super().keyPressEvent(e)
 
@@ -695,6 +704,20 @@ class MainWindow(QMainWindow):
         if self.teacher is None:
             self.teacher = Teacher(self.sheet.page, self.region, self.profile)
         x, y = self.sheet.from_view(p.x(), p.y())
+        old = getattr(self, '_recentre', None)
+        if old is not None:                      # fixing an off-centre example: same type, new picture
+            self._recentre = None
+            ex, (cx, cy) = self.teacher.example_at(x, y, old.cls)
+            ex.learned = getattr(old, 'learned', False)
+            i = next((k for k, e in enumerate(self.profile.symbols) if e.id == old.id), None)
+            if i is None: self.profile.symbols.append(ex)
+            else: self.profile.symbols[i] = ex
+            r = self._example_rowof(old.id)
+            if r >= 0: self.examples.removeRow(r)
+            self._example_row(ex); self._save_quietly()
+            vx, vy = self.sheet.to_view(cx, cy); self.view.add_marker(vx, vy, CLASS_COLORS.get(ex.cls, '#000'), 'fixed')
+            self.view.set_mode('review' if self.result else 'pan')
+            self.statusBar().showMessage('Example re-centred and saved.', 5000); return
         labels = [v[0] for v in SYMBOL_TYPES.values()]
         choice, ok = QInputDialog.getItem(self, 'What is this symbol?', 'This builder symbol is a:', labels, 0, False)
         if not ok: return
@@ -704,16 +727,39 @@ class MainWindow(QMainWindow):
             if self.profile.pen_roles.get(k) in (None, 'misc') and not k.startswith('fill'): self.profile.pen_roles[k] = 'electrical'
         self.teacher.refresh()
         ex, (cx, cy) = self.teacher.example_at(x, y, cls)
-        self.profile.symbols.append(ex); self._example_row(ex)
+        self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly()
         vx, vy = self.sheet.to_view(cx, cy); self.view.add_marker(vx, vy, CLASS_COLORS.get(cls, '#000'), sym_label(cls).split(' (')[0])
 
-    def remove_example(self):
-        rows = sorted({i.row() for i in self.examples.selectedIndexes()}, reverse=True)
-        if self.sheet and self.sheet.kind == 'pdf':
-            for r in rows:
-                eid = self.examples.item(r, 0).data(Qt.UserRole)
-                self.profile.symbols = [e for e in self.profile.symbols if e.id != eid]; self.examples.removeRow(r)
-            if rows and self.profile: self._save_quietly()
+    def _example_icon(self, ex):
+        """The taught picture, bigger, with a red cross on the centre it learned."""
+        img = 255 - ex.image().clip(0, 255).astype('uint8')
+        q = QImage(img.data, img.shape[1], img.shape[0], img.strides[0], QImage.Format_Grayscale8).copy()
+        pm = QPixmap.fromImage(q).scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        from PySide6.QtGui import QPainter, QPen
+        p = QPainter(pm); p.setPen(QPen(QColor(220, 40, 60), 1)); c = pm.width() // 2; m = pm.height() // 2
+        p.drawLine(c - 6, m, c + 6, m); p.drawLine(c, m - 6, c, m + 6); p.end()
+        return QIcon(pm)
+
+    def _example_rowof(self, eid):
+        for r in range(self.examples.rowCount()):
+            if self.examples.item(r, 0) and self.examples.item(r, 0).data(Qt.UserRole) == eid: return r
+        return -1
+
+    def remove_example(self, ex=None):
+        if not self.profile: return
+        ids = [ex.id] if ex is not None and hasattr(ex, 'id') else [self.examples.item(r, 0).data(Qt.UserRole)
+                                                                    for r in {i.row() for i in self.examples.selectedIndexes()}]
+        if not ids: return
+        for eid in ids:
+            self.profile.symbols = [e for e in self.profile.symbols if e.id != eid]
+            r = self._example_rowof(eid)
+            if r >= 0: self.examples.removeRow(r)
+        self._save_quietly(); self.statusBar().showMessage('Example deleted.', 4000)
+
+    def recentre_example(self, ex):
+        if not self.region: QMessageBox.information(self, 'Re-centre', 'Draw a box around the plan first.'); return
+        self._recentre = ex; self.view.set_mode('teach')
+        self.statusBar().showMessage(f'Click the centre of a {sym_label(ex.cls).split(" (")[0].lower()} on the plan. Esc to cancel.')
 
     # ---------- clean + review
     def run_clean(self, mode=None):

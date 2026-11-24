@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
         self.teacher = None; self.result: Result | None = None; self.dwg_doc = None; self._lib = None
         self.view = SheetView(); self.setCentralWidget(self.view)
         self.view.regionDrawn.connect(self.on_region); self.view.clicked.connect(self.on_teach_click); self.view.itemPicked.connect(self.on_pick)
+        self.view.exampleMoved.connect(self.example_moved); self.view.examplePicked.connect(self.example_picked)
+        self.view.exampleResized.connect(self.example_resized)
         self._toolbar(); self._docks(); self._menus()
         # big on/off switch for the builder's original drawing, pinned to the corner of the plan
         self.orig_btn = QPushButton('Show original  (O)'); self.orig_btn.setCheckable(True); self.orig_btn.setObjectName('origbtn')
@@ -319,10 +321,12 @@ class MainWindow(QMainWindow):
         self.examples.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); self.examples.verticalHeader().hide()
         self.examples.setSelectionBehavior(QTableWidget.SelectRows)
         self.examples.setIconSize(QPixmap(56, 56).size()); v.addWidget(self.examples, 2)
+        self.examples.itemSelectionChanged.connect(lambda: self.view.select_ex_marker(
+            self.examples.item(self.examples.currentRow(), 0).data(Qt.UserRole) if self.examples.currentRow() >= 0 and self.examples.item(self.examples.currentRow(), 0) else None))
         a = QAction(self.examples); a.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
         a.setShortcutContext(Qt.WidgetShortcut); a.triggered.connect(self.remove_example); self.examples.addAction(a)
-        hint = QLabel('Red cross = the centre it learned. Off? Click <b>Re-centre</b> on that row, then click the symbol\'s centre again. '
-                      '<b>×</b> deletes it.'); hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
+        hint = QLabel('Symbols you\'ve taught show on the plan as green boxes. Hover one for the hand, then <b>drag</b> it to centre it, '
+                      'or click it and press <b>+</b> / <b>−</b> to make its box bigger or smaller, or <b>Delete</b> to remove it. Click anywhere else to teach a new one.'); hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
         row = QHBoxLayout()
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); row.addWidget(self.teach_btn)
         b = QPushButton('Delete selected'); b.clicked.connect(lambda: self.remove_example()); row.addWidget(b); v.addLayout(row)
@@ -334,9 +338,12 @@ class MainWindow(QMainWindow):
         if not self.profile: QMessageBox.information(self, 'Teach symbols', 'Start or open a plan first.'); return
         self._teach_from = self.tabs.currentIndex() if self.tabs.currentIndex() != 1 else 0
         self.tabs.setCurrentIndex(1)
+        if self.region: self.view.clear_overlay(); self.view.page_item and self.view.page_item.setOpacity(1.0); self.view.set_mode('teach')
+        self.show_ex_markers()
+        self.statusBar().showMessage('Click the centre of a builder symbol to teach it. Green boxes are ones already taught.')
 
     def close_teach(self):
-        self.roles.clearSelection()
+        self.roles.clearSelection(); self.view.remove_ex_marker(); self._picked_ex = None
         if self.view.mode == 'teach': self.view.set_mode('review' if self.result else 'box')
         self.tabs.setCurrentIndex(2 if self.result else getattr(self, '_teach_from', 0) or 0)
 
@@ -656,8 +663,6 @@ class MainWindow(QMainWindow):
         it = QTableWidgetItem(); it.setIcon(self._example_icon(ex)); it.setData(Qt.UserRole, ex.id); self.examples.setItem(r, 0, it)
         self.examples.setRowHeight(r, 60)
         btns = QWidget(); h = QHBoxLayout(btns); h.setContentsMargins(2, 2, 2, 2); h.setSpacing(4)
-        rc = QPushButton('Re-centre'); rc.setToolTip('Click the symbol\'s centre on the plan again to fix this example')
-        rc.clicked.connect(lambda _=False, e=ex: self.recentre_example(e)); h.addWidget(rc)
         x = QPushButton('×'); x.setFixedWidth(30); x.setToolTip('Delete this example'); x.clicked.connect(lambda _=False, e=ex: self.remove_example(e)); h.addWidget(x)
         self.examples.setCellWidget(r, 2, btns); self.examples.resizeColumnToContents(2)
         cb = QComboBox(); keys = list(SYMBOL_TYPES); cb.addItems([SYMBOL_TYPES[k][0] for k in keys]); cb.setCurrentIndex(keys.index(ex.cls) if ex.cls in keys else 0)
@@ -690,12 +695,19 @@ class MainWindow(QMainWindow):
     def start_teach(self):
         if not self.profile: QMessageBox.information(self, 'Builder', 'Choose or create a builder first.'); return
         if not self.region: QMessageBox.information(self, 'Plan area', 'Draw a box around the plan first.'); return
-        self.view.clear_overlay(); self.view.set_mode('teach')
-        self.statusBar().showMessage('Click the centre of a builder symbol. Press Esc when done.')
+        self.view.clear_overlay(); self.view.set_mode('teach'); self.show_ex_markers()
+        self.statusBar().showMessage('Click the centre of a builder symbol. Green boxes are ones already taught: drag to centre them.')
 
     def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Plus, Qt.Key_Equal, Qt.Key_Minus, Qt.Key_Underscore) and getattr(self, '_picked_ex', None) and self.tabs.currentIndex() == 1:
+            self.example_resized(self._picked_ex, 1 if e.key() in (Qt.Key_Plus, Qt.Key_Equal) else -1); return
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and getattr(self, '_picked_ex', None) and self.tabs.currentIndex() == 1:
+            ex = self._example(self._picked_ex); self._picked_ex = None
+            if ex: self.remove_example(ex)
+            return
         if e.key() == Qt.Key_Escape:
             if self.roles.selectedItems(): self.roles.clearSelection(); return
+            if getattr(self, '_picked_ex', None): self._picked_ex = None; self.view.select_ex_marker(None); self.examples.clearSelection(); return
             self._recentre = None
             self.view.set_mode('review' if self.result else 'pan'); self.statusBar().clearMessage()
         else: super().keyPressEvent(e)
@@ -708,7 +720,7 @@ class MainWindow(QMainWindow):
         if old is not None:                      # fixing an off-centre example: same type, new picture
             self._recentre = None
             ex, (cx, cy) = self.teacher.example_at(x, y, old.cls)
-            ex.learned = getattr(old, 'learned', False)
+            ex.learned = getattr(old, 'learned', False); ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
             i = next((k for k, e in enumerate(self.profile.symbols) if e.id == old.id), None)
             if i is None: self.profile.symbols.append(ex)
             else: self.profile.symbols[i] = ex
@@ -727,8 +739,8 @@ class MainWindow(QMainWindow):
             if self.profile.pen_roles.get(k) in (None, 'misc') and not k.startswith('fill'): self.profile.pen_roles[k] = 'electrical'
         self.teacher.refresh()
         ex, (cx, cy) = self.teacher.example_at(x, y, cls)
-        self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly()
-        vx, vy = self.sheet.to_view(cx, cy); self.view.add_marker(vx, vy, CLASS_COLORS.get(cls, '#000'), sym_label(cls).split(' (')[0])
+        ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
+        self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly(); self._ex_marker(ex)
 
     def _example_icon(self, ex):
         """The taught picture, bigger, with a red cross on the centre it learned."""
@@ -754,7 +766,55 @@ class MainWindow(QMainWindow):
             self.profile.symbols = [e for e in self.profile.symbols if e.id != eid]
             r = self._example_rowof(eid)
             if r >= 0: self.examples.removeRow(r)
+        for eid in ids: self.view.remove_ex_marker(eid)
         self._save_quietly(); self.statusBar().showMessage('Example deleted.', 4000)
+
+    def _ex_marker(self, ex):
+        """Show a taught symbol on the plan (when it was taught on this sheet), sized to what it captured."""
+        w = getattr(ex, 'where', None) or []
+        if len(w) < 4 or not self.sheet or w[0] != self.sheet.path or w[1] != getattr(self.sheet, 'index', 0): return
+        (vx, vy), (vx2, _) = self.sheet.to_view(w[2], w[3]), self.sheet.to_view(w[2] + ex.half, w[3])
+        hv = abs(vx2 - vx) or abs(self.sheet.to_view(w[2], w[3] + ex.half)[1] - vy)
+        self.view.add_ex_marker(ex.id, vx, vy, '#2e9e5b', sym_label(ex.cls).split(' (')[0], hv)
+
+    def show_ex_markers(self):
+        self.view.remove_ex_marker()
+        if self.profile and self.sheet and self.sheet.kind == 'pdf':
+            for ex in self.profile.symbols: self._ex_marker(ex)
+
+    def _replace_example(self, old, x, y, half=None):
+        if self.teacher is None: self.teacher = Teacher(self.sheet.page, self.region, self.profile)
+        ex, (cx, cy) = self.teacher.example_at(x, y, old.cls, half=half or old.half, snap=False)
+        ex.id = old.id; ex.learned = getattr(old, 'learned', False); ex.rotations = old.rotations; ex.threshold = old.threshold
+        ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
+        i = next((k for k, e in enumerate(self.profile.symbols) if e.id == old.id), None)
+        if i is not None: self.profile.symbols[i] = ex
+        r = self._example_rowof(old.id)
+        if r >= 0: self.examples.item(r, 0).setIcon(self._example_icon(ex)); self.examples.selectRow(r)
+        self._save_quietly(); self._ex_marker(ex); self.view.select_ex_marker(ex.id)
+        return ex
+
+    def _example(self, eid):
+        return next((e for e in (self.profile.symbols if self.profile else []) if e.id == eid), None)
+
+    def example_moved(self, eid, pos):
+        old = self._example(eid)
+        if old is None or not self.region: return
+        x, y = self.sheet.from_view(pos.x(), pos.y())
+        self._replace_example(old, x, y); self.statusBar().showMessage('Centred and saved.', 4000)
+
+    def example_resized(self, eid, step):
+        old = self._example(eid)
+        if old is None or not self.region or len(getattr(old, 'where', []) or []) < 4: return
+        half = min(24.0, max(3.0, old.half + 0.75 * step))
+        self._replace_example(old, old.where[2], old.where[3], half)
+        self.statusBar().showMessage(f'Box {"bigger" if step > 0 else "smaller"}, saved.', 3000)
+
+    def example_picked(self, eid):
+        r = self._example_rowof(eid)
+        if r >= 0: self.examples.selectRow(r); self.examples.scrollToItem(self.examples.item(r, 0))
+        self.view.select_ex_marker(eid); self._picked_ex = eid
+        self.statusBar().showMessage('Selected. Drag it to centre it, + / − to resize its box, Delete to remove it, Esc to let go.')
 
     def recentre_example(self, ex):
         if not self.region: QMessageBox.information(self, 'Re-centre', 'Draw a box around the plan first.'); return

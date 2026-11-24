@@ -38,6 +38,7 @@ class SymbolExample:
     template: str            # base64 PNG at Profile.TEMPLATE_SCALE px/pt
     threshold: float = 0.6
     learned: bool = False    # saved from the review (Change type / Looks right), not taught
+    where: list = field(default_factory=list)   # [file, page, x, y] where it was taught (page points), to show it again
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     def image(self):

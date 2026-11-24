@@ -13,6 +13,9 @@ CLASS_COLORS = {
 class SheetView(QGraphicsView):
     regionDrawn = Signal(QRectF)
     clicked = Signal(QPointF)
+    exampleMoved = Signal(str, QPointF)      # a taught symbol's marker dragged to a new centre
+    examplePicked = Signal(str)              # a taught symbol's marker clicked
+    exampleResized = Signal(str, int)        # scrolled over a taught symbol: +1 bigger, -1 smaller
     itemPicked = Signal(object)
 
     def __init__(self):
@@ -25,6 +28,7 @@ class SheetView(QGraphicsView):
         self.page_item = None; self.region_item = None; self.overlay = []
         self.setBackgroundBrush(QColor('#e9e9e9'))
         self._zb = None; self._zoom_buttons()
+        self.ex_markers = {}; self._drag = None; self.viewport().setMouseTracking(True)
 
     def set_sheet(self, pixmap):
         # Take every item out one by one rather than scene.clear(): clear() deletes the C++ items under
@@ -32,6 +36,7 @@ class SheetView(QGraphicsView):
         for it in self.scene_.items():
             if it.parentItem() is None: self.scene_.removeItem(it)
         self.overlay = []; self.region_item = None; self._band = None; self.page_item = None; self.done_items = []
+        self.ex_markers = {}; self._drag = None
         self.page_item = self.scene_.addPixmap(pixmap)
         self.scene_.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self.page_item, Qt.KeepAspectRatio)
@@ -126,6 +131,9 @@ class SheetView(QGraphicsView):
             self._band = self.scene_.addRect(QRectF(p, p), pen, QBrush(QColor(74, 144, 184, 35)))
             return
         if self.mode == 'teach' and e.button() == Qt.LeftButton:
+            m = self._ex_at(e.position().toPoint())
+            if m is not None:                                    # grab a taught symbol
+                self._drag = (m, p, m.pos(), False); self.viewport().setCursor(Qt.ClosedHandCursor); return
             self.clicked.emit(p); return
         if self.mode == 'review' and e.button() == Qt.LeftButton:
             it = self.itemAt(e.position().toPoint())
@@ -140,9 +148,20 @@ class SheetView(QGraphicsView):
             self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y())); return
         if self._band is not None:
             self._band.setRect(QRectF(self._start, self.mapToScene(e.position().toPoint())).normalized()); return
+        if self._drag is not None:
+            m, start, pos0, _ = self._drag; p = self.mapToScene(e.position().toPoint())
+            m.setPos(pos0 + (p - start)); self._drag = (m, start, pos0, True); return
+        if self.mode == 'teach':
+            self.viewport().setCursor(Qt.OpenHandCursor if self._ex_at(e.position().toPoint()) is not None else Qt.CrossCursor)
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._drag is not None:
+            m, start, pos0, moved = self._drag; self._drag = None
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            if moved and (m.pos() - pos0).manhattanLength() > 0.5: self.exampleMoved.emit(m.data(1), m.pos())
+            else: self.examplePicked.emit(m.data(1))
+            return
         if getattr(self, '_pan', None) is not None:
             self._pan = None; self.set_mode(self.mode); return
         if self._band is not None:
@@ -172,6 +191,34 @@ class SheetView(QGraphicsView):
             t = self.scene_.addSimpleText('✓ ' + label, QFont('Arial', 11, QFont.Bold)); t.setBrush(QColor('#2e7d4c'))
             t.setFlag(t.GraphicsItemFlag.ItemIgnoresTransformations); t.setPos(r.left() + 4, r.top() + 4); t.setZValue(4)
             self.done_items.append(t)
+
+    def add_ex_marker(self, eid, x, y, color, label, r=9):
+        """A taught symbol on the plan: the box it captured. Hover shows a hand; drag it to re-centre it."""
+        self.remove_ex_marker(eid)
+        pen = QPen(QColor(color), 2); pen.setCosmetic(True)
+        ring = self.scene_.addRect(-r, -r, 2 * r, 2 * r, pen, QBrush(QColor(46, 158, 91, 30)))
+        cross = QPen(QColor(color), 1); cross.setCosmetic(True)
+        c = max(3, r * 0.4)
+        for a, b in (((-c, 0), (c, 0)), ((0, -c), (0, c))):
+            l = self.scene_.addLine(a[0], a[1], b[0], b[1], cross); l.setParentItem(ring)
+        t = self.scene_.addSimpleText(label, QFont('Arial', 7)); t.setBrush(QColor(color)); t.setPos(r + 1, -r); t.setParentItem(ring)
+        ring.setPos(x, y); ring.setZValue(12); ring.setData(1, eid); ring.setToolTip('Drag to re-centre this taught symbol')
+        self.ex_markers[eid] = ring
+
+    def remove_ex_marker(self, eid=None):
+        for k in ([eid] if eid else list(self.ex_markers)):
+            it = self.ex_markers.pop(k, None)
+            if it is not None and it.scene() is self.scene_: self.scene_.removeItem(it)
+
+    def select_ex_marker(self, eid):
+        for k, it in self.ex_markers.items():
+            p = it.pen(); p.setColor(QColor('#e0a100' if k == eid else '#2e9e5b')); p.setWidthF(3 if k == eid else 2); it.setPen(p)
+
+    def _ex_at(self, pos):
+        for it in self.items(pos):
+            while it is not None and it.data(1) is None: it = it.parentItem()
+            if it is not None and it.data(1) in self.ex_markers: return it
+        return None
 
     def clear_overlay(self):
         for it in self.overlay:

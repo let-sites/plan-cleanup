@@ -78,7 +78,7 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     med = hs[len(hs) // 2]
     def titleish(t, b):
         if KEEP_WORDS.search(t) or re.search(r'ELEV|EVATION', t): return True
-        return b[1] >= Ybot - 2 and (b[3] - b[1]) >= 1.6 * med
+        return b[1] >= Ybot - 2 and (b[3] - b[1]) >= 1.3 * med
     keep = [titleish(t, b) for t, b in boxes]
     for _ in range(2):                                   # same line, same size as a title word
         for i, (t, b) in enumerate(boxes):
@@ -95,21 +95,49 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     progress('Taking off notes and dimensions')
     gone = set(); masks = []
     rects = [_drect(p, M) for p in pl]
-    # kept as drawn: the title's letters, the scale line and the title's underline
-    below = {i for i, r in enumerate(rects) if r[1] >= Ybot - 1 and r[0] >= X0 - 1.5 and r[2] <= X1 + 1.5 and
-             (any(_inside_frac(r, _grow(b, 1.5)) > 0.6 for _, b in keep_w) or ((r[2] - r[0]) > 40 and (r[3] - r[1]) < 3))}
     ends = []
     for i, p in enumerate(pl):
         qs = polylines(p)
         e = [tuple((pymupdf.Point(*q[0]) * M)) for q in qs] + [tuple((pymupdf.Point(*q[-1]) * M)) for q in qs]
         ends.append(e)
+    # kept as drawn: the title's letters, the scale line and the title's underline
+    below = {i for i, r in enumerate(rects) if any(_inside_frac(r, _grow(b, 1.5)) > 0.6 for _, b in keep_w) or
+             (r[1] >= Ybot - 1 and r[0] >= X0 - 1.5 and r[2] <= X1 + 1.5 and (r[2] - r[0]) > 40 and (r[3] - r[1]) < 3)}
+    # parts of the building that stick out past its outline (porch posts and their bases) hang off it:
+    # upright pieces touching the outline, and what touches those, stay
+    def slanted1(p):
+        if len(p['items']) != 1 or p['items'][0][0] != 'l': return False
+        a, b = p['items'][0][1] * M, p['items'][0][2] * M
+        dx, dy = abs(b.x - a.x), abs(b.y - a.y)
+        return dx > 1 and dy > 1
+    def touches(r, q, d=1.0): return r[0] <= q[2] + d and q[0] <= r[2] + d and r[1] <= q[3] + d and q[1] <= r[3] + d
+    ticks = [rects[i] for i, p in enumerate(pl) if is_filled(p) and max(rects[i][2] - rects[i][0], rects[i][3] - rects[i][1]) < 8]
+    def structural(i, p):
+        r = rects[i]
+        if (p.get('width') or 0) < 0.1 and not is_filled(p): return False        # hairlines: level lines, hatching
+        if slanted1(p) or (is_filled(p) and max(r[2] - r[0], r[3] - r[1]) < 8): return False
+        if any(_inside_frac(r, b) > 0.6 for _, b in drop_w): return False
+        if any(_near(pt, t, 1.5) for pt in ends[i] for t in ticks): return False  # a dimension line ends on a tick
+        return True
+    outside = lambda r: r[2] <= X0 + 1.5 or r[0] >= X1 - 1.5
+    attached = set()
+    anchor = [rects[i] for i, p in enumerate(pl) if pen_key(p) == opk or (not outside(rects[i]) and structural(i, p))]
+    for _ in range(8):
+        new = []
+        for i, p in enumerate(pl):
+            if i in attached or pen_key(p) == opk: continue
+            r = rects[i]
+            if not outside(r) or not structural(i, p): continue
+            if any(touches(r, q) for q in anchor): new.append(i)
+        if not new: break
+        attached |= set(new); anchor = anchor + [rects[i] for i in new]
     for i, p in enumerate(pl):
         if pen_key(p) == opk: continue
         r = rects[i]; size = max(r[2] - r[0], r[3] - r[1])
         if i in below: continue                                                   # under the building: the title and scale, kept as drawn
         long_bar = is_filled(p) and (r[2] - r[0]) > 0.3 * (X1 - X0)            # the ground line
         # 1. everything to the left or right of the building: dimensions, notes, leaders, level lines
-        if not long_bar and (r[2] <= X0 + 1.5 or r[0] >= X1 - 1.5): gone.add(i); continue
+        if not long_bar and i not in attached and (r[2] <= X0 + 1.5 or r[0] >= X1 - 1.5): gone.add(i); continue
         # 2. the letters of a note
         if any(_inside_frac(r, b) > 0.6 for _, b in drop_w): gone.add(i); continue
         # 3. pitch marks: small shapes next to the 5 / 12 / PITCH numbers

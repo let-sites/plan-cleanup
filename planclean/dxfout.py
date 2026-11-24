@@ -5,7 +5,7 @@ import ezdxf
 from ezdxf.addons import Importer
 from ezdxf.enums import TextEntityAlignment
 from .result import Result, rotation_deg, sheet_layout
-from .symbols import ORIENTED
+from .symbols import ORIENTED, label as sym_label
 
 LAYERS = [('BASE-WALLS', 7), ('BASE-DOORS-WINDOWS', 8), ('BASE-CABINETS', 8), ('BASE-MISC', 8),
           ('ELEC-WIRING', 7), ('ELEC-SYMBOLS', 7), ('ELEC-TEXT', 7), ('REVIEW', 1)]
@@ -143,7 +143,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
                 if e.dxf.is_supported('true_color') and e.dxf.hasattr('true_color'): e.dxf.discard('true_color')
             if e.dxf.hasattr('style') and e.dxf.style not in out.styles: e.dxf.style = 'Standard'
     _placeholders(out)
-    msp = out.modelspace()
+    msp = out.modelspace(); checks = []
     def block_of(s):
         n = block_for(s.cls); return out.blocks.get(n) if n else None
     wire_lines, wire_arcs = retarget_wires(res, block_of)
@@ -170,8 +170,9 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         try:
             if any(e.dxftype() == 'ATTDEF' for e in out.blocks.get(name)): ref.add_auto_attribs({})   # e.g. the 4" on a can
         except Exception: pass
-        if s.review:
-            msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})
+        if s.review or getattr(s, 'added', False):
+            what = sym_label(s.cls).split(' (')[0]
+            checks.append((s.x, s.y, 12, f'{what}: added by hand, draw its wire' if getattr(s, 'added', False) else f'{what}: {s.review}'))
     for t in (sheet_layout(res, text_title) if layout else res.texts):
         if t.kind in ('room', 'title'):
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style,
@@ -181,7 +182,17 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style, 'char_height': text_note, 'color': 7,
                                                            'insert': (t.x, t.y), 'attachment_point': 5})
         if t.review:
-            msp.add_circle((t.x, t.y), 14, dxfattribs={'layer': 'REVIEW'})
+            checks.append((t.x, t.y, 14, f'Note "{" ".join(t.lines)}": {t.review}'))
+    # a numbered list of what to double-check, beside the plan, with the same number on the spot (never prints)
+    if checks:
+        xs = [p[0] for _, pts, _ in res.lines for p in pts] or [c[0] for c in checks]
+        ys = [p[1] for _, pts, _ in res.lines for p in pts] or [c[1] for c in checks]
+        lx, ly = max(xs) + 36, max(ys)
+        msp.add_text('CHECK (does not print)', dxfattribs={'layer': 'REVIEW', 'height': 6.0, 'insert': (lx, ly)})
+        for n, (x, y, r, text) in enumerate(checks, 1):
+            msp.add_circle((x, y), r, dxfattribs={'layer': 'REVIEW'})
+            msp.add_text(str(n), dxfattribs={'layer': 'REVIEW', 'height': 5.0, 'insert': (x + r + 2, y + r - 4)})
+            msp.add_text(f'{n}. {text}', dxfattribs={'layer': 'REVIEW', 'height': 4.0, 'insert': (lx, ly - 10 - 7 * n)})
     out.saveas(path)
     return sorted(m for m in missing if m)
 

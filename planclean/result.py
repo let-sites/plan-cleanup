@@ -15,6 +15,7 @@ class Sym:
     review: str = ""         # why a person should look at it ('' = fine)
     src: tuple = ()          # where it came from on the source sheet (page points)
     wall: float | None = None   # distance from the centre back to the wall it sits on (drawing units)
+    added: bool = False      # put on by hand in the review (its wire is left to draw in CAD)
     user_turn: int = 0       # quarter turns a person gave it in the review, clockwise degrees (what the builder learns from)
     fix: int = 0             # the turn the builder's learned correction already gave it, clockwise degrees
     turn: float = 0.0        # extra turn a person gave it in the review, degrees (symbols that don't sit on a wall)

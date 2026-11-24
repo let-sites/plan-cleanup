@@ -1243,7 +1243,7 @@ class MainWindow(QMainWindow):
             except Exception: ex = None
         X, Y = self._to_drawing(x, y)
         from planclean.result import Sym
-        s = Sym(cls=cls, x=X, y=Y, src=(x, y), review='Added by hand: check its turn, then Looks right')
+        s = Sym(cls=cls, x=X, y=Y, src=(x, y), review='Added by hand: check its turn, then Looks right', added=True)
         fw = self._face_wall(x, y)
         if fw:                                   # sit it on the nearest wall, facing into the room
             d, (ux, uy) = fw; s.dx, s.dy = ux, -uy; s.wall = d * self.profile.inches_per_pt

@@ -246,8 +246,7 @@ class MainWindow(QMainWindow):
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
         b = QPushButton('Names…'); b.setToolTip('Plan name, community and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
         sv.addLayout(row)
-        self.saved_lbl = QLabel(''); self.saved_lbl.setProperty('kind', 'muted'); self.saved_lbl.setWordWrap(True); sv.addWidget(self.saved_lbl)
-        self.tpl_lbl = QLabel(''); self.tpl_lbl.setProperty('kind', 'muted'); self.tpl_lbl.setWordWrap(True); sv.addWidget(self.tpl_lbl)
+        self.saved_lbl = QLabel(''); self.tpl_lbl = QLabel('')       # not shown: the panel stays uncluttered
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.addDockWidget(Qt.LeftDockWidgetArea, d); self.sheet_dock = d
         self._thumb_queue = []; self._thumb_timer = QTimer(self); self._thumb_timer.timeout.connect(self._next_thumb)

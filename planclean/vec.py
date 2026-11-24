@@ -52,6 +52,62 @@ def raster(paths, region, scale, thick=1):
             cv2.polylines(img, [q], False, 255, thick, cv2.LINE_AA, shift=4)
     return img
 
+# ---------- typed text (some builders' PDFs have real text, not letters drawn as lines)
+def page_text(page, region=None, exclude=()):
+    """Typed text lines on a PDF page, in page points (the same space as the drawings):
+    dicts with text, bbox, dir (reading direction), size and chars [(c, bbox)]."""
+    out = []
+    try: blocks = page.get_text('rawdict')['blocks']
+    except Exception: return out
+    for b in blocks:
+        for l in b.get('lines', []):
+            chars = [(c['c'], tuple(c['bbox'])) for s in l['spans'] for c in s['chars']]
+            txt = ''.join(c for c, _ in chars).strip()
+            if not txt: continue
+            x0, y0, x1, y1 = l['bbox']; cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            if region is not None and not (region[0] <= cx <= region[2] and region[1] <= cy <= region[3]): continue
+            if any(e[0] <= cx <= e[2] and e[1] <= cy <= e[3] for e in exclude): continue
+            out.append(dict(text=txt, bbox=(x0, y0, x1, y1), dir=tuple(l['dir']), chars=chars,
+                            size=max((s['size'] for s in l['spans']), default=0)))
+    return out
+
+_GLYPHS = {}
+def _glyph(c):
+    """A letter drawn upright, cropped to its ink (the same drawing every time, so taught and found symbols compare)."""
+    g = _GLYPHS.get(c)
+    if g is None:
+        f = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th), base = cv2.getTextSize(c, f, 1.0, 2)
+        cv = np.zeros((th + base + 10, tw + 10), np.uint8); cv2.putText(cv, c, (5, th + 5), f, 1.0, 255, 2, cv2.LINE_AA)
+        ys, xs = np.nonzero(cv)
+        g = cv[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if len(xs) else None
+        _GLYPHS[c] = g
+    return g
+
+def draw_text(img, region, scale, lines):
+    """Draw typed text into a raster made by raster(): each letter fills its own box, turned with its line."""
+    x0r, y0r = region[0], region[1]; H, W = img.shape
+    for l in lines:
+        dx, dy = l['dir']; k = int(round(np.degrees(np.arctan2(dy, dx)) / 90.0)) % 4
+        for c, (a, b, cc, d) in l['chars']:
+            if c.isspace(): continue
+            g = _glyph(c)
+            if g is None: continue
+            bw, bh = (cc - a) * scale, (d - b) * scale
+            gw, gh = (bw, bh) if k % 2 == 0 else (bh, bw)          # the letter's own width (along the line) and height
+            iw, ih = max(1, int(round(gw * 0.8))), max(1, int(round(gh * 0.62)))
+            t = np.rot90(cv2.resize(g, (iw, ih), interpolation=cv2.INTER_AREA), -k)
+            px = int(round(((a + cc) / 2 - x0r) * scale - t.shape[1] / 2)); py = int(round(((b + d) / 2 - y0r) * scale - t.shape[0] / 2))
+            sx0, sy0 = max(0, px), max(0, py); sx1, sy1 = min(W, px + t.shape[1]), min(H, py + t.shape[0])
+            if sx1 <= sx0 or sy1 <= sy0: continue
+            img[sy0:sy1, sx0:sx1] = np.maximum(img[sy0:sy1, sx0:sx1], t[sy0 - py:sy1 - py, sx0 - px:sx1 - px])
+    return img
+
+def text_anchors(lines, most=3):
+    """Short typed labels ('S', 'S3', '$', 'WP') are symbols, or parts of them: places to look for one."""
+    return [('glyph', (l['bbox'][0] + l['bbox'][2]) / 2, (l['bbox'][1] + l['bbox'][3]) / 2)
+            for l in lines if len(l['text'].replace(' ', '')) <= most]
+
 def in_region(path, region):
     r = path['rect']; x0, y0, x1, y1 = region
     return r.x0 >= x0 and r.x1 <= x1 and r.y0 >= y0 and r.y1 <= y1

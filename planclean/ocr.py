@@ -92,6 +92,18 @@ def _read_area(paths, region, page_rotation, scale):
                               size=min(dbb[2] - dbb[0], dbb[3] - dbb[1]), vert=vert))
     return words
 
+def typed_words(lines, page_rotation=0):
+    """Typed PDF text as words, the same shape the text reader gives (exact, so no reading needed)."""
+    out = []
+    for l in lines:
+        bb = l['bbox']
+        q = np.array([_disp(x, y, page_rotation) for x, y in ((bb[0], bb[1]), (bb[2], bb[3]))])
+        dbb = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())
+        ddx, ddy = _disp(*l['dir'], page_rotation)
+        out.append(dict(text=l['text'], n=norm(l['text']), bb=tuple(bb), dbb=dbb, cx=(bb[0] + bb[2]) / 2, cy=(bb[1] + bb[3]) / 2,
+                        score=1.0, size=min(dbb[2] - dbb[0], dbb[3] - dbb[1]), vert=abs(ddy) > abs(ddx), typed=True))
+    return out
+
 def _union(a, b):
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from . import detect
 from .profile import Profile, SymbolExample, img_to_b64
 from .symbols import ORIENTED
-from .vec import in_region, pen_key
+from .vec import in_region, pen_key, page_text, text_anchors
 
 def _wire_like(p):
     """A loose stroke (a piece of wire or a leader), not part of a symbol's outline: one open line or curve."""
@@ -17,13 +17,14 @@ class Teacher:
     def __init__(self, page, region, profile: Profile):
         self.page, self.region, self.profile = page, region, profile
         self.paths = [p for p in page.get_drawings() if in_region(p, region)]
+        self.texts = page_text(page, region)
         self.refresh()
 
     def refresh(self):
         role = lambda p: self.profile.pen_roles.get(pen_key(p), 'misc')
         sym = [p for p in self.paths if role(p) in ('electrical', 'misc', 'opening')]
-        self.img = detect.symbol_image(sym, self.region)
-        self.anchors = detect.anchors(sym)
+        self.img = detect.symbol_image(sym, self.region, self.texts)
+        self.anchors = detect.anchors(sym) + text_anchors(self.texts)
 
     def example_at(self, x, y, cls, half=None, snap=True):
         """Make an example from a click at page point (x, y). Snaps to the nearest symbol centre (snap=False: exactly there)."""

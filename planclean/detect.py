@@ -1,12 +1,14 @@
 """Find builder symbols on a sheet by comparing against examples the user clicked once."""
 from __future__ import annotations
 import numpy as np, cv2
-from .vec import raster, polylines
+from .vec import raster, polylines, draw_text
 
 S = 6  # template resolution, px per point (matches Profile.TEMPLATE_SCALE)
 
-def symbol_image(paths, region):
-    img = raster(paths, region, S).astype(np.float32)
+def symbol_image(paths, region, texts=()):
+    img = raster(paths, region, S)
+    if texts: draw_text(img, region, S, texts)          # typed letters ('S' on a switch) count as part of the drawing
+    img = img.astype(np.float32)
     return cv2.GaussianBlur(img, (0, 0), 1.2)
 
 def _closed(p):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib, math, re
 import numpy as np
 from . import wiring, detect, ocr
-from .vec import sample_lines_dir, polylines, pen_key, in_region, sample_lines, is_filled
+from .vec import sample_lines_dir, polylines, pen_key, in_region, sample_lines, is_filled, page_text, text_anchors
 from .profile import Profile, NOTE_WORDS
 from .result import Result, Sym, Text
 from .symbols import ORIENTED
@@ -53,13 +53,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 1. symbols
     progress('Finding symbols')
-    img = detect.symbol_image(symbolish, region)
-    anc = detect.anchors([p for p in pl if role(p) in ('electrical', 'misc', 'opening')])
+    texts = page_text(page, region, exclude)            # typed text (some builders), not letters drawn as lines
+    img = detect.symbol_image(symbolish, region, texts)
+    anc = detect.anchors([p for p in pl if role(p) in ('electrical', 'misc', 'opening')]) + text_anchors(texts)
     hits = detect.classify(img, region, profile.symbols, anc)
 
     # 2. text
     progress('Reading text')
     words = ocr.read_words(elec, region, page.rotation)     # page-fixed tiles: the box drawn doesn't change a word
+    if texts: words = ocr.merge_same_line(words + ocr.typed_words(texts, page.rotation))
     # Sheet titles ('ELECTRICAL PLAN - OPT. 4TH CAR GARAGE') are often lettered with the wall pen: read big
     # lettering from short open strokes of the other pens too, and turn it into a clean title.
     letters = [p for p in pl if role(p) in ('wall', 'misc', 'casework') and not is_filled(p)

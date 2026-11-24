@@ -189,7 +189,10 @@ class MainWindow(QMainWindow):
         self.save_btn = _big('Export DWG', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
         self.save_btn.setToolTip('The last step: plans and options go on your master template, elevations in their own drawing')
         tb.addWidget(self.save_btn)
-        b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
+        b = QToolButton(); b.setText('\u2699\ufe0e'); b.setToolTip('Settings  (⌘,)'); b.setFixedSize(34, 34)
+        b.setStyleSheet('QToolButton{border:1px solid #c9d3db;border-radius:17px;background:white;color:#4b5a66;font-size:19px;margin-left:6px}'
+                        'QToolButton:hover{background:#edf3f7}')
+        b.clicked.connect(self.open_settings); tb.addWidget(b)
 
     def _menus(self):
         """A normal menu bar (on a Mac it sits at the top of the screen)."""
@@ -210,7 +213,8 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.save_act = act(m, 'Export DWG', self.save_plan_dwg, QKeySequence.Save, tip='Last step: write the plan into your drawings')
         m.addSeparator()
-        act(m, 'Settings…', self.open_settings, QKeySequence.Preferences, QAction.PreferencesRole)
+        act(m, 'Settings…', self.open_settings, QKeySequence.Preferences, QAction.NoRole)     # stays in File, also on a Mac
+        act(m, 'Settings…', self.open_settings, None, QAction.PreferencesRole)                # the Mac's app menu (moved there, so not shown twice)
         act(m, 'Quit', self.close, QKeySequence.Quit, QAction.QuitRole)
         m = mb.addMenu('Edit')
         act(m, 'Undo', self.undo, QKeySequence.Undo, tip='Undo the last change in the review (Looks right, a symbol type, a delete)')

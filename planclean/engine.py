@@ -39,6 +39,36 @@ TITLE_H = 9.0          # inches: the sheet title's text height (Settings.text_he
 # a dimension or centre-line mark the builder typed (2'-6", (TYP.), CL): not a note
 DIMENSION = re.compile(r"\d+'(-? ?\d+( \d/\d)?)?|\(TYP\.?\)|C/?L")
 
+def paired_walls(paths, K, thick=(3.0, 9.0), least=12.0):
+    """ids of paths that are wall faces: straight, square to the sheet, with another such line a wall's thickness
+    (3 to 9 inches) away running alongside it for at least a foot. K: inches per point."""
+    tmin, tmax, lmin = thick[0] / K, thick[1] / K, least / K
+    segs = {0: [], 1: []}               # 0: horizontal (y, x0, x1), 1: vertical (x, y0, y1)
+    for pi, p in enumerate(paths):
+        for q in polylines(p):
+            for a, b in zip(q, q[1:]):
+                dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+                if max(dx, dy) < lmin: continue
+                if dy <= 0.03 * dx: segs[0].append(((a[1] + b[1]) / 2, min(a[0], b[0]), max(a[0], b[0]), pi))
+                elif dx <= 0.03 * dy: segs[1].append(((a[0] + b[0]) / 2, min(a[1], b[1]), max(a[1], b[1]), pi))
+    good, total = {}, {}
+    for d in (0, 1):
+        L = sorted(segs[d])
+        for _, a0, a1, pi in L: total[pi] = total.get(pi, 0.0) + (a1 - a0)
+        hit = [0.0] * len(L)
+        for i in range(len(L)):
+            c, a0, a1, _ = L[i]
+            for j in range(i + 1, len(L)):
+                c2, b0, b1, _ = L[j]
+                if c2 - c > tmax: break
+                if c2 - c < tmin: continue
+                ov = min(a1, b1) - max(a0, b0)
+                if ov >= lmin * 0.8:
+                    hit[i] = max(hit[i], ov); hit[j] = max(hit[j], ov)
+        for k, (_, a0, a1, pi) in enumerate(L):
+            if hit[k]: good[pi] = good.get(pi, 0.0) + (a1 - a0)
+    return {id(paths[pi]) for pi, g in good.items() if g >= 0.6 * total.get(pi, 1e9)}
+
 def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: None) -> Result:
     K = profile.inches_per_pt
     x0, y0 = region[0], region[1]
@@ -115,6 +145,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             w = dict(w); w['n'] = re.sub(r'^\d{1,2} +', '', w['n']); titles.append(w)     # less the detail number in front
 
     # 3. walls (for turning symbols and telling wall lights from ceiling lights)
+    # Some builders (Pulte) draw walls with the same pen as the wiring: find them by shape instead,
+    # two straight parallel lines a wall's thickness apart. From here on they count as walls.
+    straight_ = lambda p: not is_filled(p) and all(i[0] in ('l', 're', 'qu') for i in p['items'])
+    have = paired_walls([p for p in pl if role(p) == 'wall' and straight_(p)], K)
+    paired = paired_walls([p for p in elec if straight_(p)], K)
+    if len(paired) <= 2 * len(have) + 4: paired = set()        # the wall pen has the walls: these are a few wires side by side
+    if paired:
+        pen_role = role
+        role = lambda p: 'wall' if id(p) in paired else pen_role(p)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
     faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening', 'casework') and not is_filled(p)
                           and all(i[0] in ('l', 're', 'qu') for i in p['items'])])

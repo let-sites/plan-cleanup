@@ -407,8 +407,12 @@ class MainWindow(QMainWindow):
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
         self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
         self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(lambda on: self.orig_btn.setChecked(on) if self.orig_btn.isChecked() != on else self.draw_result()); self.show_orig.hide()   # state only: the Show original (O) button is the control
-        v.addWidget(QLabel('<b>Needs a look</b>'))
-        self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); v.addWidget(self.review, 3)
+        self.review_tabs = QTabWidget(); self.review_tabs.setObjectName('pilltabs')
+        self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item)
+        self.flags = QListWidget(); self.flags.itemClicked.connect(lambda it: self.on_pick(it.data(Qt.UserRole), zoom=True, ask=False))
+        self.flags.setToolTip('Things to fix by hand later. They go in the CHECK list in the DWG (never prints). Click one on the plan to change or delete it.')
+        self.review_tabs.addTab(self.review, 'Needs a look'); self.review_tabs.addTab(self.flags, 'Flags')
+        v.addWidget(self.review_tabs, 3)
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
         self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1)
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
@@ -1125,15 +1129,17 @@ class MainWindow(QMainWindow):
         return self._shapes
 
     def fill_review(self):
-        self.review.clear()
+        self.review.clear(); self.flags.clear()
         for s in self.result.symbols:
             if s.review:
                 it = QListWidgetItem(f'{sym_label(s.cls).split(" (")[0]}: {s.review}'); it.setData(Qt.UserRole, s); self.review.addItem(it)
         for t in self.result.texts:
             if t.kind == 'flag':
-                it = QListWidgetItem(f'⚑ Flag: {" ".join(t.lines)}'); it.setData(Qt.UserRole, t); self.review.addItem(it)
+                it = QListWidgetItem(f'⚑ {" ".join(t.lines)}'); it.setData(Qt.UserRole, t); self.flags.addItem(it)
             elif t.review:
                 it = QListWidgetItem(f'Note "{" ".join(t.lines)}": {t.review}'); it.setData(Qt.UserRole, t); self.review.addItem(it)
+        self.review_tabs.setTabText(0, f'Needs a look ({self.review.count()})' if self.review.count() else 'Needs a look')
+        self.review_tabs.setTabText(1, f'Flags ({self.flags.count()})' if self.flags.count() else 'Flags')
         self._sel = None
 
     def on_review_item(self, it):
@@ -1313,7 +1319,8 @@ class MainWindow(QMainWindow):
         self._snap()
         X, Y = self._to_drawing(*self.sheet.from_view(p.x(), p.y()))
         self.result.texts.append(Text('flag', [text.strip()], X, Y))
-        self.draw_result(); self.fill_review(); self.statusBar().showMessage('Flagged. It\'s in the CHECK list when you export. ⌘Z to undo.', 4000)
+        self.draw_result(); self.fill_review(); self.review_tabs.setCurrentIndex(1); self.flags.setCurrentRow(self.flags.count() - 1)
+        self.statusBar().showMessage('Flagged. It\'s in the CHECK list when you export. ⌘Z to undo.', 4000)
 
     def heights_from_sheet(self):
         if not self.result or self.result.stats.get('kind') == 'elevation': return

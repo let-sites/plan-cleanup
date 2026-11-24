@@ -5,7 +5,7 @@ lines, roof pitch marks, material notes (STONE, SIDING, TRIM, VERIFY ...) and th
 The sheet title (FRONT ELEVATION) and the scale line come back as clean text.
 """
 from __future__ import annotations
-import re
+import difflib, re
 from collections import defaultdict
 import numpy as np
 import pymupdf
@@ -14,6 +14,9 @@ from . import ocr
 from .vec import polylines, pen_key, in_region, is_filled
 from .result import Result, Text
 
+TITLE_VOCAB = ['FRONT', 'REAR', 'LEFT', 'RIGHT', 'SIDE', 'ELEVATION', 'OPTIONAL', 'CAR', 'GARAGE', 'CRAWL', 'SPACE',
+               'BASEMENT', 'WALKOUT', 'GARDEN', 'LEVEL', 'PORCH', 'COVERED', 'PATIO', 'DECK', 'EXTENDED', 'TANDEM', 'FULL',
+               'PARTIAL', 'FINISHED', 'UNFINISHED', 'INTERIOR', 'KITCHEN', 'BATH', 'MASTER', 'PRIMARY', 'FIREPLACE', 'STAIR']
 KEEP_WORDS = re.compile(r'ELEVATION|^SCALE')
 
 
@@ -89,6 +92,13 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
                 if ov > 0.5 * min(h, hc) and 0.6 < h / max(hc, 1e-6) < 1.6 and min(abs(b[0] - c[2]), abs(c[0] - b[2])) < 4 * hc:
                     keep[i] = True; break
     keep_w = [(t, _grow(b, 1.5)) for (t, b), k in zip(boxes, keep) if k]
+    # the title and scale under the building become real text in the drawing (the builder's lettering goes)
+    progress('Reading the title')
+    text_lines, scale_ln = _title_lines(page, pl, M, dregion, Ybot)
+    text_boxes = [_grow(b, 1.5) for ln in text_lines for _, b, _ in ln]
+    for ln in text_lines:            # the whole line, a little past its ends (a dash the reader skipped: 'ELEVATION -')
+        bs = [b for _, b, _ in ln]; h = max(b[3] - b[1] for b in bs)
+        text_boxes.append((min(b[0] for b in bs) - 1.5 * h, min(b[1] for b in bs) - 1, max(b[2] for b in bs) + 1.5 * h, max(b[3] for b in bs) + 1))
     drop_w = [(t, _grow(b, 1.5)) for (t, b), k in zip(boxes, keep) if not k]
     numeric = [b for t, b in drop_w if re.fullmatch(r'[0-9:/ ]+|[0-9: ]*PITCH', t)]
 
@@ -221,6 +231,37 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
         r = rects[i]
         if max(r[2] - r[0], r[3] - r[1]) < 8 and any(_near(pt, r, 2.5) for pt in tips): gone.add(i)
 
+    if text_lines:
+        lettering = set()
+        for i, r in enumerate(rects):
+            if i in gone or (r[2] - r[0]) > 40: continue     # the underline stays (no letter is that wide)
+            if any(_inside_frac(r, b) > 0.6 for b in text_boxes): lettering.add(i)
+        D = page.derotation_matrix
+        def centre(lns):
+            bs = [b for ln in lns for _, b, _ in ln]
+            c = pymupdf.Point((min(b[0] for b in bs) + max(b[2] for b in bs)) / 2, (min(b[1] for b in bs) + max(b[3] for b in bs)) / 2) * D
+            return tx(c.x, c.y)
+        def tidy(t):
+            t = re.sub(r'\bA(?=TH\b)', '4', t.upper()); t = re.sub(r'\bOP[T1I]?\.?(?=\s|$)', 'OPT.', t)
+            t = re.sub(r'EL[A-Z]?[VY]?AT[I1L]ON\b', ' ELEVATION', t)            # also glued on: 'RISHTELEVATION'
+            toks = []
+            for tok in t.split():
+                if tok not in TITLE_VOCAB and len(tok) >= 4 and tok.isalpha():
+                    m = difflib.get_close_matches(tok, TITLE_VOCAB, n=1, cutoff=0.75)
+                    if m: tok = m[0]
+                toks.append(tok)
+            return re.sub(r'\s*[-–—]\s*$', ' -', ' '.join(toks)).strip()
+        tl = [ln for ln in text_lines if ln not in scale_ln]
+        if tl:
+            X, Y = centre(tl); res.texts.append(Text('title', [tidy(' '.join(t for t, _, _ in ln)) for ln in tl], X, Y))
+        if scale_ln:
+            raw = ' '.join(t for t, _, _ in scale_ln[0]).upper()
+            m = re.search(r'([0-9IOL]{1,2}) ?/ ?([0-9IOL]{1,2})', raw)
+            fx = lambda g: re.sub('[IL]', '1', g).replace('O', '0')
+            frac = f'{fx(m.group(1))}/{fx(m.group(2))}' if m else '1/4'
+            X, Y = centre(scale_ln[:1]); res.texts.append(Text('note', [f'SCALE: {frac}" = 1\'-0"'], X, Y))
+        gone |= lettering
+
     for i, p in enumerate(pl):
         if i in gone: continue
         role = 'wall' if pen_key(p) == opk else 'misc'
@@ -234,6 +275,43 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
 
     res.stats = dict(removed=len(gone), words=len(words), kind='elevation')
     return res
+
+
+def _title_lines(page, pl, M, dregion, Ybot):
+    """The title's lines and the scale line under the building, each [(text, display box, word)], read from
+    a picture of just that band (big lettering reads best on its own, at a small size)."""
+    band = pymupdf.Rect(dregion[0], max(Ybot - 120, dregion[1]), dregion[2], dregion[3]) * page.derotation_matrix   # some of the house too: a thin strip reads badly
+    band.normalize(); b = (band.x0, band.y0, band.x1, band.y1)
+    ps = [p for p in pl if in_region(p, b)]
+    if not ps: return [], []
+    best = None
+    for sc in (1.5, 2.0, 2.5):
+        try: ws = ocr.merge_same_line(ocr._read_area(ps, b, page.rotation, sc))
+        except Exception: continue
+        ws = [w for w in ws if not w['vert']]
+        def box(w):
+            r = pymupdf.Rect(w['bb']) * M; r.normalize(); return (r.x0, r.y0, r.x1, r.y1)
+        items = [(w['n'].upper().strip(), box(w), w) for w in ws]
+        heads = [it for it in items if re.search(r'ELEV|EVATION|LEVAT|EL[EA]?[VY]?AT[I1L]ON', it[0]) and it[1][1] >= Ybot - 4]
+        if not heads: continue
+        head = max(heads, key=lambda it: it[2]['score'])
+        h = head[1][3] - head[1][1]
+        def same_line(it, ref):
+            c = ref[1]; r = it[1]
+            return (min(r[3], c[3]) - max(r[1], c[1])) > 0.5 * min(r[3] - r[1], c[3] - c[1]) and 0.6 < (r[3] - r[1]) / max(c[3] - c[1], 1e-6) < 1.6
+        lines = [sorted([it for it in items if same_line(it, head) and min(abs(it[1][0] - head[1][2]), abs(head[1][0] - it[1][2]), 0 if it is head else 1e9) < 4 * h] or [head], key=lambda z: z[1][0])]
+        # a second title line of the same size just under it ('OPT. 4TH CAR GARAGE')
+        for it in sorted(items, key=lambda z: z[1][1]):
+            if any(it in ln for ln in lines) or re.search(r'SCALE|SCALF|5CALE', it[0]): continue
+            gy = it[1][1] - lines[-1][0][1][3]
+            if 0 <= gy < 1.0 * h and 0.7 < (it[1][3] - it[1][1]) / max(h, 1e-6) < 1.4 and it[1][0] < head[1][2] + 2 * h and it[1][2] > head[1][0] - 2 * h:
+                lines.append(sorted([v for v in items if same_line(v, it)], key=lambda z: z[1][0]))
+            if len(lines) == 3: break
+        scale = [it for it in items if re.search(r'SCALE|SCALF|5CALE', it[0]) and it[1][1] >= head[1][1]]
+        scale_lines = [sorted([v for v in items if same_line(v, scale[0])], key=lambda z: z[1][0])] if scale else []
+        score = sum(it[2]['score'] for ln in lines for it in ln) + (0.5 if scale else 0)
+        if best is None or score > best[0]: best = (score, lines + scale_lines, scale_lines)
+    return (best[1], best[2]) if best else ([], [])
 
 
 def _fill_outline(p):

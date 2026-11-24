@@ -184,7 +184,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             def gap(a, b):          # space between two word boxes (0 when they touch or overlap)
                 return math.hypot(max(0.0, a[0] - b[2], b[0] - a[2]), max(0.0, a[1] - b[3], b[1] - a[3]))
             # the rest of the note ("BLK & WIRE"), however the text reader split it into words
-            group = [w] + [v for v in words if v is not w and ('WIRE' in v['n'] or 'BLK' in v['n']) and gap(v['bb'], w['bb']) < 10]
+            NOTE_WORD = re.compile(r'BLK|BLACK|WIRE|W[I1]R|FOR|CLG|CEIL|FAN|^[&$+]$|^AND$|^T?BLK')
+            group = [w]
+            grown = True
+            while grown:            # every line of the note, however the text reader split or misread it
+                grown = False
+                for v in words:
+                    if v in group or id(v) in used: continue
+                    near = min(gap(v['bb'], g['bb']) for g in group)
+                    if near < 12 and (NOTE_WORD.search(v['n']) or len(v['n']) <= 3): group.append(v); grown = True
             cands = [h for h in hits if h['cls'] in ('ceiling_light', 'disk_light')]
             if cands:
                 h = min(cands, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
@@ -431,7 +439,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if d[i] <= ATTACH: return i
         for i, h in enumerate(hits):
             for b in h.get('note_boxes', ()):
-                if b[0] - 12 <= pt[0] <= b[2] + 12 and b[1] - 12 <= pt[1] <= b[3] + 12: return i
+                if b[0] - 16 <= pt[0] <= b[2] + 16 and b[1] - 16 <= pt[1] <= b[3] + 16: return i
         return -1
     def ahead_hit(pt, d, reach=45.0):
         """A loose wire end that points straight at a symbol a little way off ends at that symbol."""

@@ -52,10 +52,12 @@ class SettingsDialog(QDialog):
         f = QFormLayout(self)
         self.prof = QLineEdit(settings.profiles_folder); b1 = QPushButton('Choose…'); b1.clicked.connect(lambda: self._dir(self.prof))
         self.lib = QLineEdit(settings.block_library); b2 = QPushButton('Choose…'); b2.clicked.connect(lambda: self._file(self.lib, 'Drawings (*.dwg *.dxf)'))
+        self.tpl = QLineEdit(settings.master_template); b4 = QPushButton('Choose…'); b4.clicked.connect(lambda: self._file(self.tpl, 'Drawings (*.dwg *.dxf)'))
         self.oda = QLineEdit(settings.oda_path or (oda.find_converter() or '')); b3 = QPushButton('Choose…'); b3.clicked.connect(lambda: self._file(self.oda, 'Programs (*)'))
         for lab, ed, b, tip in [('Builder profiles folder', self.prof, b1, 'Put this in a shared folder (Dropbox, network drive) so everyone uses the same builder setups.'),
                                 ('Your block library (DWG/DXF)', self.lib, b2, 'A drawing that contains your standard blocks, e.g. one of your plan files.'),
-                                ('ODA File Converter', self.oda, b3, 'Free download from opendesign.com. Needed to read and write DWG.')]:
+                                ('ODA File Converter', self.oda, b3, 'Free download from opendesign.com. Needed to read and write DWG.'),
+                                ('Master template (DWG)', self.tpl, b4, 'Your MASTER FILE TEMPLATE. Every new plan starts from it; leave empty for a blank drawing.')]:
             row = QHBoxLayout(); row.addWidget(ed); row.addWidget(b); w = QWidget(); w.setLayout(row); w.setToolTip(tip); f.addRow(lab, w)
         self.th_room = QDoubleSpinBox(); self.th_room.setValue(settings.text_height_room); self.th_room.setSuffix(' in')
         self.th_note = QDoubleSpinBox(); self.th_note.setValue(settings.text_height_note); self.th_note.setSuffix(' in')
@@ -80,7 +82,7 @@ class SettingsDialog(QDialog):
         if f: ed.setText(f)
     def apply(self):
         s = self.s; s.profiles_folder = self.prof.text(); s.block_library = self.lib.text(); s.oda_path = self.oda.text()
-        s.text_height_room = self.th_room.value(); s.text_height_note = self.th_note.value(); s.settings_version = 3
+        s.text_height_room = self.th_room.value(); s.text_height_note = self.th_note.value(); s.master_template = self.tpl.text()
         s.block_map = {k: cb.currentText() for k, cb in self.combos.items() if cb.currentText() != SYMBOL_TYPES[k][1]}
         s.save()
 

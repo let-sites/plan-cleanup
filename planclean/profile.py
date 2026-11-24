@@ -99,9 +99,10 @@ class Settings:
     text_height_note: float = 3.0
     text_height_title: float = 9.0  # the sheet / option title
     text_style: str = "Notes"      # Arial
-    text_layer: str = "$Circuits"  # room names and kept notes
+    text_layer: str = "$RoomNames" # room names and kept notes
     symbol_layer: str = "$Standard"
-    settings_version: int = 3
+    master_template: str = ""      # your MASTER FILE TEMPLATE; new plans start from it
+    settings_version: int = 4
 
     @staticmethod
     def load():
@@ -112,6 +113,9 @@ class Settings:
                 # earlier versions had other defaults; your standard is 5" Notes (white) on $Circuits
                 d.pop('text_height_room', None); d.pop('text_height_note', None)
                 d['settings_version'] = 3
+            if d.get('settings_version', 1) < 4:
+                if d.get('text_layer') == '$Circuits': d['text_layer'] = '$RoomNames'     # your text layer
+                d['settings_version'] = 4
             return Settings(**{k: v for k, v in d.items() if k in Settings.__dataclass_fields__})
         return Settings(profiles_folder=str(config_dir() / 'profiles'))
 

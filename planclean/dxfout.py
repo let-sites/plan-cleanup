@@ -108,7 +108,7 @@ def _placeholders(doc):
         b = doc.blocks.new('UNMAPPED'); b.add_circle((0, 0), 3); b.add_line((-3, 0), (3, 0)); b.add_line((0, -3), (0, 3))
 
 def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_note=3.0,
-              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True, base=None):
+              text_layer='$RoomNames', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True, base=None):
     """layout=False: the texts are already placed (a combined Plan).
     base: a drawing to add to (your master template); the plan goes in empty model space above what's there."""
     out = base if base is not None else ezdxf.new('R2018', setup=True)
@@ -120,8 +120,9 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         if name not in out.layers: out.layers.add(name, color=col)
     out.layers.get('REVIEW').dxf.plot = 0        # the red check-me circles show on screen but never print
     # your own layers; when pasted into a template, the template's layer settings win
-    if text_layer not in out.layers: out.layers.add(text_layer, color=1)
+    if text_layer not in out.layers: out.layers.add(text_layer, color=7)
     if symbol_layer not in out.layers: out.layers.add(symbol_layer, color=7)
+    _drop_layer(out, '$ELEC', symbol_layer)             # no longer used: anything on it moves to the symbol layer
     if text_style not in out.styles: out.styles.add(text_style, font='arial.ttf')
     wanted = sorted({block_for(s.cls) for s in res.symbols if block_for(s.cls)})
     have = [n for n in wanted if library_doc is not None and library_doc.blocks.get(n) is not None]
@@ -222,3 +223,14 @@ def blank_like(template):
         try: out.header[k] = template.header[k]
         except Exception: pass
     return out
+
+
+def _drop_layer(doc, name, move_to):
+    """Delete a layer from the drawing; anything still on it moves to another layer first."""
+    if name not in doc.layers: return
+    for e in list(doc.entitydb.values()):
+        try:
+            if e.dxf.is_supported('layer') and e.dxf.get('layer', '').lower() == name.lower(): e.dxf.layer = move_to
+        except Exception: pass
+    try: doc.layers.remove(name)
+    except Exception: pass

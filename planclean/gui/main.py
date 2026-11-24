@@ -427,6 +427,8 @@ class MainWindow(QMainWindow):
         row.addWidget(self.level_cb, 1); row.addStretch(2); v.addLayout(row)
         self.area_type.currentTextChanged.connect(lambda t: (self.level_lbl.setVisible(t == 'Electrical plan'), self.level_cb.setVisible(t == 'Electrical plan')))
         row = QHBoxLayout()
+        self.sym_btn = QPushButton('Add a symbol'); self.sym_btn.setToolTip('For one it missed: click it on the plan, then pick what it is (it learns it, too)')
+        self.sym_btn.clicked.connect(self.start_place_symbol); row.addWidget(self.sym_btn)
         self.note_btn = QPushButton('Add a note'); self.note_btn.setToolTip('Click on the plan where it goes, then type it (a ceiling height, say)')
         self.note_btn.clicked.connect(self.start_place_note); row.addWidget(self.note_btn)
         self.heights_btn = QPushButton('Ceiling heights from another sheet…')
@@ -769,7 +771,8 @@ class MainWindow(QMainWindow):
         else: super().keyPressEvent(e)
 
     def on_teach_click(self, p: QPointF):
-        if self.view.mode == 'place': self.place_note(p); return
+        if self.view.mode == 'place':
+            (self.place_symbol if getattr(self, '_placing', 'note') == 'symbol' else self.place_note)(p); return
         if self.teacher is None:
             self.teacher = Teacher(self.sheet.page, self.region, self.profile)
         x, y = self.sheet.from_view(p.x(), p.y())
@@ -1218,9 +1221,68 @@ class MainWindow(QMainWindow):
         u, v = x - o[0], y - o[1]
         return ((m[1][1] * u - m[0][1] * v) / det, (-m[1][0] * u + m[0][0] * v) / det)
 
+    def start_place_symbol(self):
+        if not self.result: return
+        self._placing = 'symbol'; self.view.set_mode('place')
+        self.statusBar().showMessage('Click the centre of the symbol it missed. Esc to cancel.')
+
+    def place_symbol(self, p):
+        self.view.set_mode('review')
+        labels = [v[0] for v in SYMBOL_TYPES.values()]
+        last = getattr(self, '_last_sym', 0)
+        choice, ok = QInputDialog.getItem(self, 'Add a symbol', 'This symbol is a:', labels, last, False)
+        if not ok: self.statusBar().clearMessage(); return
+        self._last_sym = labels.index(choice); cls = list(SYMBOL_TYPES)[self._last_sym]
+        x, y = self.sheet.from_view(p.x(), p.y()); ex = None
+        self._snap()
+        if self.sheet.kind == 'pdf' and self.region and self.profile:
+            try:                      # centre it on the builder's drawing, and learn it so next time it's found
+                if self.teacher is None: self.teacher = Teacher(self.sheet.page, self.region, self.profile)
+                ex, (x, y) = self.teacher.example_at(x, y, cls); ex.learned = True
+                ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), x, y]
+            except Exception: ex = None
+        X, Y = self._to_drawing(x, y)
+        from planclean.result import Sym
+        s = Sym(cls=cls, x=X, y=Y, src=(x, y), review='Added by hand: check its turn, then Looks right')
+        fw = self._face_wall(x, y)
+        if fw:                                   # sit it on the nearest wall, facing into the room
+            d, (ux, uy) = fw; s.dx, s.dy = ux, -uy; s.wall = d * self.profile.inches_per_pt
+        self.result.symbols.append(s)
+        if ex is not None:
+            self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly()
+        self._stay_on(s)
+        self.statusBar().showMessage('Added' + (' and learned for next time' if ex else '') + '. R turns it, arrows or drag move it, ⌘Z undoes it.', 6000)
+
+    def _face_wall(self, x, y, reach_in=18.0):
+        """The nearest wall straight up, down, left or right of a page point: (distance, direction away from it)."""
+        if not (self.profile and self.sheet and self.sheet.kind == 'pdf' and self.region): return None
+        from planclean.vec import pen_key, polylines, in_region, is_filled
+        from planclean.engine import paired_walls
+        K = self.profile.inches_per_pt; reach = reach_in / K
+        box = (x - reach, y - reach, x + reach, y + reach)
+        near = [p for p in self.sheet.page.get_drawings() if p['rect'].x1 >= box[0] and p['rect'].x0 <= box[2]
+                and p['rect'].y1 >= box[1] and p['rect'].y0 <= box[3] and not is_filled(p)]
+        roles = self.profile.pen_roles
+        walls = [p for p in near if roles.get(pen_key(p)) == 'wall']
+        if len(walls) < 2:                       # one pen for everything: walls by shape
+            elec = [p for p in self.sheet.page.get_drawings() if roles.get(pen_key(p)) == 'electrical' and in_region(p, self.region)]
+            ids = paired_walls([p for p in elec if all(i[0] in ('l', 're', 'qu') for i in p['items'])], K)
+            walls = [p for p in near if id(p) in ids] or walls
+        best = None
+        for p in walls:
+            for q in polylines(p):
+                for a, b in zip(q, q[1:]):
+                    if abs(a[1] - b[1]) < 0.05 * abs(a[0] - b[0]) and min(a[0], b[0]) <= x <= max(a[0], b[0]):
+                        d = abs((a[1] + b[1]) / 2 - y); u = (0.0, 1.0 if y > (a[1] + b[1]) / 2 else -1.0)
+                    elif abs(a[0] - b[0]) < 0.05 * abs(a[1] - b[1]) and min(a[1], b[1]) <= y <= max(a[1], b[1]):
+                        d = abs((a[0] + b[0]) / 2 - x); u = (1.0 if x > (a[0] + b[0]) / 2 else -1.0, 0.0)
+                    else: continue
+                    if 1.0 < d < reach and (best is None or d < best[0]): best = (d, u)
+        return best
+
     def start_place_note(self):
         if not self.result: return
-        self.view.set_mode('place'); self.statusBar().showMessage('Click on the plan where the note goes. Esc to cancel.')
+        self._placing = 'note'; self.view.set_mode('place'); self.statusBar().showMessage('Click on the plan where the note goes. Esc to cancel.')
 
     def place_note(self, p):
         self.view.set_mode('review')

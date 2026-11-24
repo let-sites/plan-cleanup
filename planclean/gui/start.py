@@ -130,63 +130,107 @@ def edit_builder_settings(settings, name, parent=None):
     if BuilderSettingsDialog(p, parent).exec() != QDialog.Accepted: return False
     p.save(path); return True
 
-class ManageBuildersDialog(QDialog):
-    """Every saved builder: archive the ones you're done with (hidden, kept), restore them, or delete them."""
-    def __init__(self, settings, parent=None):
-        super().__init__(parent); self.settings = settings
-        self.setWindowTitle('Builders'); self.resize(520, 520)
-        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 16)
-        t = QLabel('Builders'); t.setStyleSheet('font-size:18px;font-weight:700'); v.addWidget(t)
-        v.addWidget(QLabel('<b>In use</b>'))
-        self.active = QListWidget(); self.active.setSelectionMode(QListWidget.ExtendedSelection); v.addWidget(self.active, 2)
-        row = QHBoxLayout()
-        arch = QPushButton('Archive'); arch.setToolTip('Hide from the builder list. Nothing is lost; restore it any time.')
-        dele = QPushButton('Delete…'); dele.setToolTip('Delete the builder and everything taught for it')
-        arch.clicked.connect(self.archive); dele.clicked.connect(lambda: self.delete(self.active, self.settings.profiles_dir()))
-        row.addWidget(arch); row.addWidget(dele); row.addStretch(); v.addLayout(row)
-        v.addWidget(QLabel('<b>Archived</b>'))
-        self.archived = QListWidget(); self.archived.setSelectionMode(QListWidget.ExtendedSelection); v.addWidget(self.archived, 1)
-        row = QHBoxLayout()
-        rest = QPushButton('Restore'); rest.clicked.connect(self.restore)
-        dele2 = QPushButton('Delete…'); dele2.clicked.connect(lambda: self.delete(self.archived, self.archive_dir()))
-        row.addWidget(rest); row.addWidget(dele2); row.addStretch(); v.addLayout(row)
-        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(self.reject); bb.accepted.connect(self.accept)
-        v.addSpacing(8); v.addWidget(bb)
-        self.refresh()
+class BuildersPage(QWidget):
+    """Every builder in one place: pick one on the left, act on it on the right."""
+    def __init__(self, settings, parent=None, on_change=None):
+        super().__init__(parent); self.settings = settings; self.on_change = on_change or (lambda *a: None)
+        h = QHBoxLayout(self); h.setContentsMargins(0, 8, 0, 0); h.setSpacing(18)
+        left = QVBoxLayout(); h.addLayout(left, 1)
+        self.show_arch = QCheckBox('Show archived builders'); self.show_arch.toggled.connect(lambda _: self.refresh())
+        self.lst = QListWidget(); self.lst.currentRowChanged.connect(lambda _: self.update_side())
+        left.addWidget(self.lst, 1); left.addWidget(self.show_arch)
+        nb = QPushButton('+ New builder…'); nb.clicked.connect(self.new); left.addWidget(nb)
+        right = QVBoxLayout(); h.addLayout(right, 1)
+        self.title = QLabel(''); self.title.setStyleSheet('font-size:18px;font-weight:700'); right.addWidget(self.title)
+        self.desc = QLabel(''); self.desc.setWordWrap(True); self.desc.setProperty('kind', 'muted'); right.addWidget(self.desc)
+        self.b_edit = _big('What to show on their plans…', primary=True); self.b_edit.clicked.connect(self.edit)
+        self.b_ren = QPushButton('Rename…'); self.b_ren.clicked.connect(self.rename)
+        self.b_arch = QPushButton('Archive'); self.b_arch.setToolTip('Hide from the builder list. Nothing is lost; restore it any time.')
+        self.b_arch.clicked.connect(self.archive)
+        self.b_del = QPushButton('Delete…'); self.b_del.clicked.connect(self.delete)
+        for b in (self.b_edit, self.b_ren, self.b_arch, self.b_del): right.addWidget(b)
+        right.addStretch(); self.refresh()
 
     def archive_dir(self):
         d = self.settings.profiles_dir() / 'Archived'; d.mkdir(exist_ok=True); return d
+    def folder(self):
+        return self.archive_dir() if self.show_arch.isChecked() else self.settings.profiles_dir()
+    def name(self):
+        it = self.lst.currentItem(); return it.text() if it else None
 
-    def refresh(self):
-        self.active.clear(); self.archived.clear()
-        for n in self.settings.list_profiles(): self.active.addItem(n)
-        for f in sorted(self.archive_dir().glob('*.json')): self.archived.addItem(f.stem)
+    def refresh(self, select=None):
+        self.lst.clear()
+        names = sorted(f.stem for f in self.folder().glob('*.json'))
+        for n in names: self.lst.addItem(n)
+        if names: self.lst.setCurrentRow(names.index(select) if select in names else 0)
+        self.update_side()
 
-    def _move(self, lst, src, dst):
-        for it in lst.selectedItems():
-            f = src / (it.text() + '.json'); target = dst / f.name
-            if target.exists():
-                QMessageBox.warning(self, 'Builders', f'There is already a builder called "{it.text()}" there.'); continue
-            f.replace(target)
-        self.refresh()
+    def update_side(self):
+        n = self.name(); arch = self.show_arch.isChecked()
+        for b in (self.b_edit, self.b_ren, self.b_arch, self.b_del): b.setEnabled(bool(n))
+        self.b_edit.setVisible(not arch); self.b_ren.setVisible(not arch)
+        self.b_arch.setText('Restore' if arch else 'Archive')
+        if not n:
+            self.title.setText('No archived builders' if arch else 'No builders yet')
+            self.desc.setText('' if arch else 'Click + New builder to add one.'); return
+        self.title.setText(n)
+        if arch: self.desc.setText('Archived: hidden from the builder list. Restore it to use it again.'); return
+        try:
+            p = Profile.load(self.folder() / (n + '.json'))
+            outl = dict(OUTLET_CHOICES).get(p.outlets, p.outlets)
+            self.desc.setText(f'{len(p.symbols)} symbols taught. Outlets: {outl}. '
+                              f'Detectors: {"shown" if p.detectors else "left off"}. Exhaust fans: {"shown" if p.exhaust_fans else "left off"}.')
+        except Exception as e: self.desc.setText(f'Could not read this builder ({e}).')
 
-    def archive(self): self._move(self.active, self.settings.profiles_dir(), self.archive_dir())
-    def restore(self): self._move(self.archived, self.archive_dir(), self.settings.profiles_dir())
+    def new(self):
+        name, ok = QInputDialog.getText(self, 'New builder', 'Builder name:')
+        if not (ok and name.strip()): return
+        if self.settings.profile_path(name).exists(): QMessageBox.warning(self, 'New builder', 'There is already a builder with that name.'); return
+        p = Profile(name=name.strip())
+        if BuilderSettingsDialog(p, self).exec() != QDialog.Accepted: return
+        p.save(self.settings.profile_path(p.name))
+        self.show_arch.setChecked(False); self.refresh(safe_name(p.name)); self.on_change()
 
-    def delete(self, lst, folder):
-        names = [it.text() for it in lst.selectedItems()]
-        if not names: return
-        msg = ('Delete ' + (f'"{names[0]}"' if len(names) == 1 else f'these {len(names)} builders') +
-               ' and everything taught for ' + ('it' if len(names) == 1 else 'them') + '? This can\'t be undone.\n\n'
-               'To keep a builder but hide it from the list, use Archive instead.')
-        box = QMessageBox(QMessageBox.Warning, 'Delete builder', msg, QMessageBox.Cancel, self)
-        yes = box.addButton('Delete', QMessageBox.DestructiveRole); box.setDefaultButton(QMessageBox.Cancel)
-        box.exec()
+    def edit(self):
+        if self.name(): edit_builder_settings(self.settings, self.name(), self); self.update_side(); self.on_change(self.name())
+
+    def rename(self):
+        old = self.name()
+        if not old: return
+        new, ok = QInputDialog.getText(self, 'Rename builder', 'New name:', text=old)
+        if not (ok and new.strip()) or safe_name(new) == old: return
+        dst = self.settings.profile_path(new)
+        if dst.exists(): QMessageBox.warning(self, 'Rename builder', 'There is already a builder with that name.'); return
+        src = self.settings.profile_path(old); p = Profile.load(src); p.name = new.strip(); p.save(dst); src.unlink()
+        self.refresh(safe_name(new)); self.on_change(safe_name(new), old)
+
+    def archive(self):
+        n = self.name()
+        if not n: return
+        src, dst = (self.archive_dir(), self.settings.profiles_dir()) if self.show_arch.isChecked() else (self.settings.profiles_dir(), self.archive_dir())
+        if (dst / (n + '.json')).exists(): QMessageBox.warning(self, 'Builders', f'There is already a builder called "{n}" there.'); return
+        (src / (n + '.json')).replace(dst / (n + '.json')); self.refresh(); self.on_change(None, n)
+
+    def delete(self):
+        n = self.name()
+        if not n: return
+        box = QMessageBox(QMessageBox.Warning, 'Delete builder', f'Delete "{n}" and everything taught for it? This can\'t be undone.\n\n'
+                          'To keep a builder but hide it from the list, use Archive instead.', QMessageBox.Cancel, self)
+        yes = box.addButton('Delete', QMessageBox.DestructiveRole); box.setDefaultButton(QMessageBox.Cancel); box.exec()
         if box.clickedButton() is not yes: return
-        for n in names:
-            try: (folder / (n + '.json')).unlink()
-            except OSError: pass
-        self.refresh()
+        try: (self.folder() / (n + '.json')).unlink()
+        except OSError: pass
+        self.refresh(); self.on_change(None, n)
+
+
+class ManageBuildersDialog(QDialog):
+    """The Builders page on its own (from the New plan window)."""
+    def __init__(self, settings, parent=None):
+        super().__init__(parent); self.setWindowTitle('Builders'); self.resize(720, 460)
+        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 16)
+        self.page = BuildersPage(settings, self); v.addWidget(self.page, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(self.reject); v.addWidget(bb)
+
 
 def _heading(n, text):
     l = QLabel(f'<span style="color:#4a90b8;font-weight:700">{n}</span>&nbsp;&nbsp;<b>{text}</b>')
@@ -226,7 +270,7 @@ class StartDialog(QDialog):
         self.plan_name.textEdited.connect(lambda _: setattr(self, '_named', True)); self.plan_name.textChanged.connect(self.update_state)
         v.addWidget(self.plan_name)
         row = QHBoxLayout()
-        self.project = QLineEdit(); self.project.setPlaceholderText('Project name (e.g. the community)'); self.project.setMinimumHeight(30)
+        self.project = QLineEdit(); self.project.setPlaceholderText('Community'); self.project.setMinimumHeight(30)
         self.elevations = QLineEdit(); self.elevations.setPlaceholderText('Elevation names, e.g. Modern, Traditional, Farmhouse'); self.elevations.setMinimumHeight(30)
         row.addWidget(self.project, 1); row.addWidget(self.elevations, 2); v.addLayout(row)
         v.addWidget(_heading('2', 'Builder\'s files (PDF or DWG, one or several)'))

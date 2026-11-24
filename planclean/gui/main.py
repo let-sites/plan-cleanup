@@ -23,7 +23,7 @@ from planclean.plan import Plan, combine, reattach, find_board, on_board
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
-from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog, ManageBuildersDialog, edit_builder_settings
+from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog, BuildersPage, edit_builder_settings
 THUMB_W = 200
 AREA_TYPES = ['Electrical plan', 'Option', 'Exterior elevation', 'Interior elevation']
 is_elev = lambda t: 'elevation' in t
@@ -60,27 +60,41 @@ def run_in_thread(parent, fn, on_done, title):
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent); self.setWindowTitle('Settings'); self.s = settings
-        f = QFormLayout(self)
-        self.prof = QLineEdit(settings.profiles_folder); b1 = QPushButton('Choose…'); b1.clicked.connect(lambda: self._dir(self.prof))
-        self.lib = QLineEdit(settings.block_library); b2 = QPushButton('Choose…'); b2.clicked.connect(lambda: self._file(self.lib, 'Drawings (*.dwg *.dxf)'))
+        outer = QVBoxLayout(self); outer.setContentsMargins(20, 16, 20, 14)
+        tabs = QTabWidget(); outer.addWidget(tabs, 1)
+
+        # -- Files and text
+        g = QWidget(); f = QFormLayout(g); f.setContentsMargins(16, 16, 16, 16); f.setVerticalSpacing(14); f.setHorizontalSpacing(14)
+        f.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter); f.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.tpl = QLineEdit(settings.master_template); b4 = QPushButton('Choose…'); b4.clicked.connect(lambda: self._file(self.tpl, 'Drawings (*.dwg *.dxf)'))
+        self.lib = QLineEdit(settings.block_library); b2 = QPushButton('Choose…'); b2.clicked.connect(lambda: self._file(self.lib, 'Drawings (*.dwg *.dxf)'))
+        self.prof = QLineEdit(settings.profiles_folder); b1 = QPushButton('Choose…'); b1.clicked.connect(lambda: self._dir(self.prof))
         self.oda = QLineEdit(settings.oda_path or (oda.find_converter() or '')); b3 = QPushButton('Choose…'); b3.clicked.connect(lambda: self._file(self.oda, 'Programs (*)'))
-        for lab, ed, b, tip in [('Builder profiles folder', self.prof, b1, 'Put this in a shared folder (Dropbox, network drive) so everyone uses the same builder setups.'),
-                                ('Your block library (DWG/DXF)', self.lib, b2, 'A drawing that contains your standard blocks, e.g. one of your plan files.'),
-                                ('ODA File Converter', self.oda, b3, 'Free download from opendesign.com. Needed to read and write DWG.'),
-                                ('Master template (DWG)', self.tpl, b4, 'Your MASTER FILE TEMPLATE. Every new plan starts from it; leave empty for a blank drawing.')]:
-            row = QHBoxLayout(); row.addWidget(ed); row.addWidget(b); w = QWidget(); w.setLayout(row); w.setToolTip(tip); f.addRow(lab, w)
-        if parent is not None:
-            row = QHBoxLayout()
-            mb = QPushButton('Manage builders…'); mb.setToolTip('See every builder; archive, restore or delete')
-            mb.clicked.connect(parent.manage_builders); row.addWidget(mb)
-            if parent.profile:
-                cb = QPushButton(f'Settings for {parent.profile.name}…'); cb.clicked.connect(parent.current_builder_settings); row.addWidget(cb)
-            row.addStretch(); w = QWidget(); w.setLayout(row); f.addRow('Builders', w)
-        self.th_room = QDoubleSpinBox(); self.th_room.setValue(settings.text_height_room); self.th_room.setSuffix(' in')
-        self.th_note = QDoubleSpinBox(); self.th_note.setValue(settings.text_height_note); self.th_note.setSuffix(' in')
-        f.addRow('Room name text height', self.th_room); f.addRow('Note text height', self.th_note)
-        f.addRow(QLabel('Which of your blocks to use for each symbol type:'))
+        for lab, ed, b, tip in [('Master template', self.tpl, b4, 'Your MASTER FILE TEMPLATE (DWG). Plans and options are placed on it when you export. Empty: a blank drawing.'),
+                                ('Block library', self.lib, b2, 'A drawing (DWG or DXF) that holds your standard blocks, e.g. one of your plan files.'),
+                                ('Builders folder', self.prof, b1, 'Put this in a shared folder (OneDrive, Dropbox) so everyone uses the same builder setups.'),
+                                ('ODA File Converter', self.oda, b3, 'Free from opendesign.com. Needed to read and write DWG.')]:
+            ed.setMinimumWidth(480); ed.setMinimumHeight(30); ed.setToolTip(tip); ed.setCursorPosition(0)
+            ed.textChanged.connect(lambda t, e=ed: e.setToolTip(t))
+            row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.addWidget(ed, 1); row.addWidget(b)
+            w = QWidget(); w.setLayout(row)
+            col = QVBoxLayout(); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(2); col.addWidget(w)
+            hint = QLabel(tip); hint.setProperty('kind', 'muted'); hint.setWordWrap(True); col.addWidget(hint)
+            box = QWidget(); box.setLayout(col)
+            l = QLabel(f'<b>{lab}</b>'); f.addRow(l, box)
+        self.th_room = QDoubleSpinBox(); self.th_room.setValue(settings.text_height_room); self.th_room.setSuffix(' in'); self.th_room.setMaximumWidth(120)
+        self.th_note = QDoubleSpinBox(); self.th_note.setValue(settings.text_height_note); self.th_note.setSuffix(' in'); self.th_note.setMaximumWidth(120)
+        f.addRow(QLabel('<b>Room name text height</b>'), self.th_room); f.addRow(QLabel('<b>Note text height</b>'), self.th_note)
+        tabs.addTab(g, 'Files and text')
+
+        # -- Builders
+        self.builders = BuildersPage(settings, self, on_change=(parent.builders_changed if parent is not None else None))
+        bw = QWidget(); bv = QVBoxLayout(bw); bv.setContentsMargins(16, 12, 16, 12); bv.addWidget(self.builders)
+        tabs.addTab(bw, 'Builders')
+
+        # -- Blocks
+        bl = QWidget(); bv = QVBoxLayout(bl); bv.setContentsMargins(16, 12, 16, 12)
+        bv.addWidget(QLabel('Which of your blocks is used for each symbol type:'))
         self.table = QTableWidget(len(SYMBOL_TYPES) - 1, 2); self.table.setHorizontalHeaderLabels(['Symbol type', 'Your block'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().hide()
         blocks = parent.library_blocks() if parent else []
@@ -89,9 +103,13 @@ class SettingsDialog(QDialog):
             self.table.setItem(i, 0, QTableWidgetItem(lab))
             cb = QComboBox(); cb.setEditable(True); cb.addItems(sorted(set(blocks + [settings.block_for(k)])))
             cb.setCurrentText(settings.block_for(k)); self.table.setCellWidget(i, 1, cb); self.combos[k] = cb
-        self.table.setMinimumHeight(300); f.addRow(self.table)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); f.addRow(bb)
-        self.resize(640, 700)
+        bv.addWidget(self.table, 1)
+        tabs.addTab(bl, 'Symbol blocks')
+        if parent is not None and getattr(parent, '_settings_tab', None) is not None: tabs.setCurrentIndex(parent._settings_tab)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel); bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        outer.addWidget(bb)
+        self.resize(860, 620)
     def _dir(self, ed):
         d = QFileDialog.getExistingDirectory(self, 'Choose folder', ed.text())
         if d: ed.setText(d)
@@ -133,11 +151,13 @@ class MainWindow(QMainWindow):
     # ---------- layout
     def _toolbar(self):
         tb = QToolBar('Main'); tb.setMovable(False); self.addToolBar(tb)
-        b = _big('New plan…', primary=True); b.clicked.connect(self.new_cleanup); tb.addWidget(b)
-        b = _big('Open plan…'); b.clicked.connect(self.open_plan_dialog); tb.addWidget(b)
+        # only before a plan is open; once in a plan they're in the File menu
+        self.new_btn = _big('New plan…', primary=True); self.new_btn.clicked.connect(self.new_cleanup); self.new_act_tb = tb.addWidget(self.new_btn)
+        self.open_btn = _big('Open plan…'); self.open_btn.clicked.connect(self.open_plan_dialog); self.open_act_tb = tb.addWidget(self.open_btn)
         self.info = QLabel(''); self.info.setStyleSheet('font-size:14px;padding-left:12px'); tb.addWidget(self.info)
         spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); tb.addWidget(spacer)
-        self.save_btn = _big('Save drawing (DWG)…', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
+        self.save_btn = _big('Export DWG…', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
+        self.save_btn.setToolTip('The last step: plans and options go on your master template, elevations in their own drawing')
         tb.addWidget(self.save_btn)
         b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
 
@@ -158,7 +178,7 @@ class MainWindow(QMainWindow):
         act(m, 'Add files to this plan…', self.add_files)
         act(m, 'Plan names…', self.edit_names)
         m.addSeparator()
-        self.save_act = act(m, 'Save drawing (DWG)…', self.save_plan_dwg, QKeySequence.Save, tip='Last step: write the plan into your drawings')
+        self.save_act = act(m, 'Export DWG…', self.save_plan_dwg, QKeySequence.Save, tip='Last step: write the plan into your drawings')
         m.addSeparator()
         act(m, 'Settings…', self.open_settings, QKeySequence.Preferences, QAction.PreferencesRole)
         act(m, 'Quit', self.close, QKeySequence.Quit, QAction.QuitRole)
@@ -168,9 +188,9 @@ class MainWindow(QMainWindow):
         act(m, 'Zoom out', lambda: self.view.zoom(0.8), QKeySequence.ZoomOut)
         act(m, 'Show original on/off', lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
         m = mb.addMenu('Builders')
-        act(m, 'Manage builders…', self.manage_builders, tip='See every builder; archive, restore or delete')
-        act(m, 'New builder…', self.new_builder)
-        act(m, 'Settings for this builder…', self.current_builder_settings)
+        act(m, 'All builders…', self.manage_builders, tip='See every builder; change what to show, rename, archive or delete')
+        act(m, 'What to show for this builder…', self.current_builder_settings)
+        act(m, 'Teach this builder\'s symbols…', self.open_teach)
 
     def _fill_recent(self):
         self.recent_menu.clear()
@@ -180,17 +200,18 @@ class MainWindow(QMainWindow):
             a = self.recent_menu.addAction(name); a.triggered.connect(lambda *_, f=folder: self.open_plan(f))
 
     def manage_builders(self):
-        ManageBuildersDialog(self.settings, self).exec()
-        if self.profile and self.profile.name not in self.settings.list_profiles(): self.set_builder(None)
+        self._settings_tab = 1
+        try: self.open_settings()
+        finally: self._settings_tab = None
 
-    def new_builder(self):
-        name, ok = QInputDialog.getText(self, 'New builder', 'Builder name:')
-        if ok and name.strip():
-            p = Profile(name=name.strip()); BuilderSettingsDialog(p, self).exec()
-            p.save(self.settings.profile_path(p.name))
-            if QMessageBox.question(self, 'New builder', f'Use {p.name} for this plan now?') == QMessageBox.Yes:
-                self.set_builder(safe_name(p.name))
-                if self.plan: self.plan.builder = safe_name(p.name); self.plan.save()
+    def builders_changed(self, name=None, old=None):
+        """A builder was edited, renamed, archived or deleted in Settings."""
+        if not self.profile: return
+        cur = safe_name(self.profile.name)
+        if old and old == cur:
+            self.set_builder(name if name else None)
+            if self.plan: self.plan.builder = name or ''; self.plan.save()
+        elif name and name == cur: self.set_builder(name)
 
     def current_builder_settings(self):
         if not self.profile:
@@ -223,11 +244,8 @@ class MainWindow(QMainWindow):
         sv.addLayout(row)
         row = QHBoxLayout(); row.setSpacing(4)
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
-        b = QPushButton('Names…'); b.setToolTip('Plan name, project name and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
+        b = QPushButton('Names…'); b.setToolTip('Plan name, community and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
         sv.addLayout(row)
-        self.done_btn = _big('Done adding? Save drawing…', primary=True); self.done_btn.clicked.connect(self.save_plan_dwg)
-        self.done_btn.setToolTip('The last step: puts the plans and options on your master template and the elevations in their own drawing')
-        self.done_btn.hide(); sv.addWidget(self.done_btn)
         self.saved_lbl = QLabel(''); self.saved_lbl.setProperty('kind', 'muted'); self.saved_lbl.setWordWrap(True); sv.addWidget(self.saved_lbl)
         self.tpl_lbl = QLabel(''); self.tpl_lbl.setProperty('kind', 'muted'); self.tpl_lbl.setWordWrap(True); sv.addWidget(self.tpl_lbl)
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
@@ -241,7 +259,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, d)
 
     def _step(self, n, title, text):
-        l = QLabel(f'<div style="font-size:12px;color:#4a90b8;font-weight:700;letter-spacing:1px">STEP {n} OF 3</div>'
+        l = QLabel(f'<div style="font-size:12px;color:#4a90b8;font-weight:700;letter-spacing:1px">STEP {n} OF 2</div>' if n else '<div></div>'
                    f'<div style="font-size:18px;font-weight:700;margin:2px 0 6px 0">{title}</div>'
                    f'<div style="color:#444">{text}</div>')
         l.setWordWrap(True); return l
@@ -269,14 +287,16 @@ class MainWindow(QMainWindow):
 
     def clean_clicked(self):
         if self.profile is not None and not (self.profile.symbols or self.profile.dwg_block_map):
-            self.tabs.setCurrentIndex(1); return           # new builder: teach symbols first
+            self.open_teach(); return           # new builder: teach symbols first
         self.run_clean()
 
     def _tab_setup(self):
         w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(self._step(2, 'Teach this builder', 'This builder is new, so show the app what their symbols look like. '
-                               'Click <b>Click a symbol to teach it</b>, click one of each kind of symbol on the plan and say what it is. '
-                               'You only do this once per builder.'))
+        row = QHBoxLayout(); back = QPushButton('← Back'); back.setToolTip('Leave teaching and go back to where you were')
+        back.clicked.connect(self.close_teach); row.addWidget(back); row.addStretch(); v.addLayout(row)
+        v.addWidget(self._step(0, 'Teach this builder\'s symbols', 'Show the app what this builder\'s symbols look like: '
+                               'click <b>Click a symbol to teach it</b>, click one of each kind of symbol on the plan and say what it is. '
+                               'You only do this once per builder. Click <b>← Back</b> any time to leave.'))
         v.addWidget(self._help('Do this once per builder. Tell the tool what each line type is, then click one example of each '
                                'symbol and choose what it is. Save when done; later plans from this builder skip this step.'))
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
@@ -293,8 +313,17 @@ class MainWindow(QMainWindow):
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); row.addWidget(self.teach_btn)
         b = QPushButton('Remove selected'); b.clicked.connect(self.remove_example); row.addWidget(b); v.addLayout(row)
         b = QPushButton('Builder settings (what to show)…'); b.clicked.connect(self.builder_settings); v.addWidget(b)
-        b = _big('Save builder and clean the plan', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
+        b = _big('Done: save and clean the area', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
         return w
+
+    def open_teach(self):
+        if not self.profile: QMessageBox.information(self, 'Teach symbols', 'Start or open a plan first.'); return
+        self._teach_from = self.tabs.currentIndex() if self.tabs.currentIndex() != 1 else 0
+        self.tabs.setCurrentIndex(1)
+
+    def close_teach(self):
+        if self.view.mode == 'teach': self.view.set_mode('review' if self.result else 'box')
+        self.tabs.setCurrentIndex(2 if self.result else getattr(self, '_teach_from', 0) or 0)
 
     def builder_settings(self):
         if not self.profile: QMessageBox.information(self, 'Builder', 'Choose or create a builder first.'); return
@@ -307,7 +336,7 @@ class MainWindow(QMainWindow):
 
     def _tab_review(self):
         w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(self._step(3, 'Check it and save', 'Anything the app wasn\'t sure about is in <span style="color:#d00000">red</span> and listed below. '
+        v.addWidget(self._step(2, 'Check it and add it to the plan', 'Anything the app wasn\'t sure about is in <span style="color:#d00000">red</span> and listed below. '
                                'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
         self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
@@ -324,11 +353,11 @@ class MainWindow(QMainWindow):
         self.for_lbl = QLabel('for'); row.addWidget(self.for_lbl); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
                      'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 1); v.addLayout(row)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
-        self.add_hint = QLabel('Then box the next area, or click <b>Save drawing</b> at the top.'); self.add_hint.setProperty('kind', 'muted')
+        self.add_hint = QLabel('Then box the next area. When you\'re done, click <b>Export DWG</b> at the top right.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
         row = QHBoxLayout()
         b = QPushButton('Redraw the box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
-        b = QPushButton('Teach more symbols'); b.clicked.connect(lambda: self.tabs.setCurrentIndex(1)); row.addWidget(b)
+        b = QPushButton('Teach symbols…'); b.clicked.connect(self.open_teach); row.addWidget(b)
         b = QPushButton('Start over'); b.setToolTip('Run the cleanup again on the same box. Your changes are lost.')
         b.clicked.connect(self.start_over); row.addWidget(b); v.addLayout(row)
         return w
@@ -409,7 +438,7 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self); dlg.setWindowTitle('Plan names'); f = QFormLayout(dlg)
         n = QLineEdit(self.plan.name); p = QLineEdit(self.plan.project); e = QLineEdit(', '.join(self.plan.elevations))
         e.setPlaceholderText('e.g. Modern, Traditional, Farmhouse')
-        f.addRow('Plan name', n); f.addRow('Project name', p); f.addRow('Elevation names', e)
+        p.setPlaceholderText('Fills PROJECT NAME on the template'); f.addRow('Plan name', n); f.addRow('Community', p); f.addRow('Elevation names', e)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); f.addRow(bb)
         dlg.resize(460, 160)
         if dlg.exec() != QDialog.Accepted: return
@@ -423,8 +452,10 @@ class MainWindow(QMainWindow):
         for i, it in enumerate(self.plan.items):
             typ = f' ({it.area_type})' if it.area_type != 'Electrical plan' else f' ({it.elevation})' if it.elevation else ''
             w = QListWidgetItem(f'{i + 1}. {it.label}{typ}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
-        self.done_btn.setVisible(bool(self.plan.items))
-        self.saved_lbl.setText('✓ Plan saved automatically. Reopen it any time with File ▸ Open plan.' if self.plan.items else '')
+        self.saved_lbl.setText('✓ Saved automatically; reopen it with File ▸ Open plan.<br><b>Done adding areas?</b> Click <b>Export DWG</b> at the top right.'
+                               if self.plan.items else '')
+        self.saved_lbl.setTextFormat(Qt.RichText)
+        self.new_act_tb.setVisible(False); self.open_act_tb.setVisible(False)
         t = self.settings.master_template
         self.tpl_lbl.setText(f'Template: {Path(t).name} (change it in Settings)' if t else 'Template: none, set one in Settings')
         self.save_btn.setEnabled(True)
@@ -448,7 +479,7 @@ class MainWindow(QMainWindow):
             lab = getattr(self.sheet, 'label', self.sheet.title)
             self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab, self.area_type.currentText(),
                           self.elev_cb.currentData() or '')
-            msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Save drawing.'
+            msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Export DWG when you\'re done.'
         self.editing = None; self.fill_items(); self.redraw_box(); self.statusBar().showMessage(msg, 8000)
         QTimer.singleShot(0, self.view.fit)            # back out to the whole page for the next box
 
@@ -650,7 +681,7 @@ class MainWindow(QMainWindow):
         prof = self.profile
         if self.sheet.kind == 'pdf':
             mode = mode or self.mode_cb.currentData()
-            if not prof.symbols and mode != 'elevation': QMessageBox.information(self, 'Builder setup', 'Teach at least one symbol in step 2 first.'); return
+            if not prof.symbols and mode != 'elevation': QMessageBox.information(self, 'Builder setup', 'Teach this builder at least one symbol first (Teach symbols…).'); return
             self.run_pdf_job(self.sheet.doc.name, self.sheet.index, self.region, prof, mode); return
         else:
             doc, region = self.sheet.doc, self.region

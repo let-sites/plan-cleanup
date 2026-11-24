@@ -84,13 +84,11 @@ class DropOverlay(QLabel):
 
 OUTLET_CHOICES = [('all', 'All outlets'), ('outside', 'Only exterior and garage outlets'), ('none', 'No outlets')]
 
-class BuilderSettingsDialog(QDialog):
-    """What LET's finished plan shows for one builder."""
-    def __init__(self, profile, parent=None):
-        super().__init__(parent); self.profile = profile
-        self.setWindowTitle(f'Builder settings: {profile.name}')
-        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 16)
-        t = QLabel(f'What to show on {profile.name} plans'); t.setStyleSheet('font-size:18px;font-weight:700'); v.addWidget(t)
+class BuilderOptions(QWidget):
+    """What LET's finished plan shows for one builder. changed() is called after every change (already applied)."""
+    def __init__(self, profile, parent=None, changed=None):
+        super().__init__(parent); self.profile = profile; self.changed = changed
+        v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(QLabel('<b>Outlets</b>'))
         self.out_group = QButtonGroup(self)
         for i, (key, text) in enumerate(OUTLET_CHOICES):
@@ -103,6 +101,7 @@ class BuilderSettingsDialog(QDialog):
         # notes deleted during review are left off from then on: list them so a mistake can be undone
         from planclean.profile import DEFAULT_DROP
         self.learned = [p for p in profile.drop_labels if p not in DEFAULT_DROP]
+        self.drop_list = None
         if self.learned:
             v.addWidget(QLabel('<b>Builder notes left off</b> (learned when you deleted them)'))
             self.drop_list = QListWidget(); self.drop_list.setMaximumHeight(140)
@@ -110,18 +109,37 @@ class BuilderSettingsDialog(QDialog):
                 it = QListWidgetItem(re.sub(r'\\(.)', r'\1', pat.strip('^$'))); it.setData(Qt.UserRole, pat); self.drop_list.addItem(it)
             v.addWidget(self.drop_list)
             rm = QPushButton('Show it again'); rm.setToolTip('Stop leaving the selected note off')
-            rm.clicked.connect(lambda: [self.drop_list.takeItem(self.drop_list.row(i)) for i in self.drop_list.selectedItems()])
+            rm.clicked.connect(self._show_again)
             v.addWidget(rm, 0, Qt.AlignLeft)
+        if changed:
+            self.out_group.idClicked.connect(lambda _: self.apply()); self.det.toggled.connect(lambda _: self.apply()); self.fan.toggled.connect(lambda _: self.apply())
+
+    def _show_again(self):
+        for i in self.drop_list.selectedItems(): self.drop_list.takeItem(self.drop_list.row(i))
+        if self.changed: self.apply()
+
+    def apply(self):
+        self.profile.outlets = OUTLET_CHOICES[max(self.out_group.checkedId(), 0)][0]
+        self.profile.detectors = self.det.isChecked(); self.profile.exhaust_fans = self.fan.isChecked()
+        if self.drop_list is not None:
+            keep = {self.drop_list.item(i).data(Qt.UserRole) for i in range(self.drop_list.count())}
+            self.profile.drop_labels = [p for p in self.profile.drop_labels if p not in self.learned or p in keep]
+        if self.changed: self.changed()
+
+
+class BuilderSettingsDialog(QDialog):
+    """What LET's finished plan shows for one builder (a new builder, or from the Teach panel)."""
+    def __init__(self, profile, parent=None):
+        super().__init__(parent); self.profile = profile
+        self.setWindowTitle(f'Builder settings: {profile.name}')
+        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 16)
+        t = QLabel(f'What to show on {profile.name} plans'); t.setStyleSheet('font-size:18px;font-weight:700'); v.addWidget(t)
+        self.opts = BuilderOptions(profile, self); v.addWidget(self.opts)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addSpacing(8); v.addWidget(bb)
 
     def accept(self):
-        self.profile.outlets = OUTLET_CHOICES[max(self.out_group.checkedId(), 0)][0]
-        self.profile.detectors = self.det.isChecked(); self.profile.exhaust_fans = self.fan.isChecked()
-        if self.learned:
-            keep = {self.drop_list.item(i).data(Qt.UserRole) for i in range(self.drop_list.count())}
-            self.profile.drop_labels = [p for p in self.profile.drop_labels if p not in self.learned or p in keep]
-        super().accept()
+        self.opts.apply(); super().accept()
 
 def edit_builder_settings(settings, name, parent=None):
     """Open the settings for a saved builder and save them. True if saved."""
@@ -143,12 +161,16 @@ class BuildersPage(QWidget):
         right = QVBoxLayout(); h.addLayout(right, 1)
         self.title = QLabel(''); self.title.setStyleSheet('font-size:18px;font-weight:700'); right.addWidget(self.title)
         self.desc = QLabel(''); self.desc.setWordWrap(True); self.desc.setProperty('kind', 'muted'); right.addWidget(self.desc)
-        self.b_edit = _big('What to show on their plans…', primary=True); self.b_edit.clicked.connect(self.edit)
+        self.opts_box = QVBoxLayout(); right.addLayout(self.opts_box); self.opts = None
+        self.saved_note = QLabel(''); self.saved_note.setProperty('kind', 'muted'); right.addWidget(self.saved_note)
+        self.b_edit = QPushButton(); self.b_edit.hide()
         self.b_ren = QPushButton('Rename…'); self.b_ren.clicked.connect(self.rename)
         self.b_arch = QPushButton('Archive'); self.b_arch.setToolTip('Hide from the builder list. Nothing is lost; restore it any time.')
         self.b_arch.clicked.connect(self.archive)
         self.b_del = QPushButton('Delete…'); self.b_del.clicked.connect(self.delete)
-        for b in (self.b_edit, self.b_ren, self.b_arch, self.b_del): right.addWidget(b)
+        row = QHBoxLayout()
+        for b in (self.b_ren, self.b_arch, self.b_del): row.addWidget(b)
+        row.addStretch(); right.addLayout(row)
         right.addStretch(); self.refresh()
 
     def archive_dir(self):
@@ -168,7 +190,9 @@ class BuildersPage(QWidget):
     def update_side(self):
         n = self.name(); arch = self.show_arch.isChecked()
         for b in (self.b_edit, self.b_ren, self.b_arch, self.b_del): b.setEnabled(bool(n))
-        self.b_edit.setVisible(not arch); self.b_ren.setVisible(not arch)
+        self.b_ren.setVisible(not arch)
+        if self.opts is not None: self.opts.setParent(None); self.opts.deleteLater(); self.opts = None
+        self.saved_note.setText('')
         self.b_arch.setText('Restore' if arch else 'Archive')
         if not n:
             self.title.setText('No archived builders' if arch else 'No builders yet')
@@ -177,9 +201,11 @@ class BuildersPage(QWidget):
         if arch: self.desc.setText('Archived: hidden from the builder list. Restore it to use it again.'); return
         try:
             p = Profile.load(self.folder() / (n + '.json'))
-            outl = dict(OUTLET_CHOICES).get(p.outlets, p.outlets)
-            self.desc.setText(f'{len(p.symbols)} symbols taught. Outlets: {outl}. '
-                              f'Detectors: {"shown" if p.detectors else "left off"}. Exhaust fans: {"shown" if p.exhaust_fans else "left off"}.')
+            self.desc.setText(f'{len(p.symbols)} symbols taught. What shows on their plans:')
+            path = self.folder() / (n + '.json')
+            def save(p=p, path=path, n=n):
+                p.save(path); self.saved_note.setText('✓ Saved'); self.on_change(n)
+            self.opts = BuilderOptions(p, self, changed=save); self.opts_box.addWidget(self.opts)
         except Exception as e: self.desc.setText(f'Could not read this builder ({e}).')
 
     def new(self):

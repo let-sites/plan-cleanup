@@ -31,7 +31,7 @@ class SheetView(QGraphicsView):
         # Python's feet, and dropping a stale reference later (the blue box) crashed the app.
         for it in self.scene_.items():
             if it.parentItem() is None: self.scene_.removeItem(it)
-        self.overlay = []; self.region_item = None; self._band = None; self.page_item = None
+        self.overlay = []; self.region_item = None; self._band = None; self.page_item = None; self.done_items = []
         self.page_item = self.scene_.addPixmap(pixmap)
         self.scene_.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self.page_item, Qt.KeepAspectRatio)
@@ -122,7 +122,8 @@ class SheetView(QGraphicsView):
             self._start_pan(e.position()); return
         if self.mode == 'box' and e.button() == Qt.LeftButton:
             self._start = p
-            self._band = self.scene_.addRect(QRectF(p, p), QPen(QColor('#4a90b8'), 0, Qt.DashLine), QBrush(QColor(74, 144, 184, 35)))
+            pen = QPen(QColor('#2f7fb0'), 2.5, Qt.DashLine); pen.setCosmetic(True)
+            self._band = self.scene_.addRect(QRectF(p, p), pen, QBrush(QColor(74, 144, 184, 35)))
             return
         if self.mode == 'teach' and e.button() == Qt.LeftButton:
             self.clicked.emit(p); return
@@ -156,8 +157,21 @@ class SheetView(QGraphicsView):
     def show_region(self, r):
         if self.region_item is not None and self.region_item.scene() is self.scene_:
             self.region_item.setRect(r); return
-        self.region_item = self.scene_.addRect(r, QPen(QColor('#4a90b8'), 0), QBrush(Qt.NoBrush))
+        pen = QPen(QColor('#2f7fb0'), 2.5); pen.setCosmetic(True)       # same weight at any zoom
+        self.region_item = self.scene_.addRect(r, pen, QBrush(QColor(74, 144, 184, 18)))
         self.region_item.setZValue(5)
+
+    def show_done(self, boxes):
+        """Outline areas already added to the plan: (rect, label) pairs."""
+        for it in getattr(self, 'done_items', []):
+            if it.scene() is self.scene_: self.scene_.removeItem(it)
+        self.done_items = []
+        pen = QPen(QColor('#3c9a5f'), 2); pen.setCosmetic(True)
+        for r, label in boxes:
+            it = self.scene_.addRect(r, pen, QBrush(QColor(60, 154, 95, 28))); it.setZValue(4); self.done_items.append(it)
+            t = self.scene_.addSimpleText('✓ ' + label, QFont('Arial', 11, QFont.Bold)); t.setBrush(QColor('#2e7d4c'))
+            t.setFlag(t.GraphicsItemFlag.ItemIgnoresTransformations); t.setPos(r.left() + 4, r.top() + 4); t.setZValue(4)
+            self.done_items.append(t)
 
     def clear_overlay(self):
         for it in self.overlay:

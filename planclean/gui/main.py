@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
         self.addAction(a)
         self.setAcceptDrops(True); self._overlay = DropOverlay(self)
         self.resize(1500, 950)
+        self._undo = []
         self.file_name = ''; self.plan: Plan | None = None; self.editing = None   # editing: index of the plan area being redone
         self.statusBar().showMessage('Click New plan to start.')
 
@@ -155,8 +156,13 @@ class MainWindow(QMainWindow):
         self.new_btn = _big('New plan…', primary=True); self.new_btn.clicked.connect(self.new_cleanup); self.new_act_tb = tb.addWidget(self.new_btn)
         self.open_btn = _big('Open plan…'); self.open_btn.clicked.connect(self.open_plan_dialog); self.open_act_tb = tb.addWidget(self.open_btn)
         self.info = QLabel(''); self.info.setStyleSheet('font-size:14px;padding-left:12px'); tb.addWidget(self.info)
+        self.names_btn = QPushButton('Plan Names'); self.names_btn.setCursor(Qt.PointingHandCursor)
+        self.names_btn.setToolTip('Plan name, community and elevation names (they fill the template\'s labels)')
+        self.names_btn.setStyleSheet('QPushButton{border:1px solid #c9d3db;border-radius:12px;padding:3px 12px;background:white;font-size:13px}'
+                                     'QPushButton:hover{background:#edf3f7}')
+        self.names_btn.clicked.connect(self.edit_names); self.names_act_tb = tb.addWidget(self.names_btn); self.names_act_tb.setVisible(False)
         spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); tb.addWidget(spacer)
-        self.save_btn = _big('Export DWG…', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
+        self.save_btn = _big('Export DWG', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
         self.save_btn.setToolTip('The last step: plans and options go on your master template, elevations in their own drawing')
         tb.addWidget(self.save_btn)
         b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
@@ -178,18 +184,19 @@ class MainWindow(QMainWindow):
         act(m, 'Add files to this plan…', self.add_files)
         act(m, 'Plan names…', self.edit_names)
         m.addSeparator()
-        self.save_act = act(m, 'Export DWG…', self.save_plan_dwg, QKeySequence.Save, tip='Last step: write the plan into your drawings')
+        self.save_act = act(m, 'Export DWG', self.save_plan_dwg, QKeySequence.Save, tip='Last step: write the plan into your drawings')
         m.addSeparator()
         act(m, 'Settings…', self.open_settings, QKeySequence.Preferences, QAction.PreferencesRole)
         act(m, 'Quit', self.close, QKeySequence.Quit, QAction.QuitRole)
+        m = mb.addMenu('Edit')
+        act(m, 'Undo', self.undo, QKeySequence.Undo, tip='Undo the last change in the review (Looks right, a symbol type, a delete)')
         m = mb.addMenu('View')
         act(m, 'Fit to window', self.view.fit, 'F')
         act(m, 'Zoom in', lambda: self.view.zoom(1.25), QKeySequence.ZoomIn)
         act(m, 'Zoom out', lambda: self.view.zoom(0.8), QKeySequence.ZoomOut)
         act(m, 'Show original on/off', lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
         m = mb.addMenu('Builders')
-        act(m, 'All builders…', self.manage_builders, tip='See every builder; change what to show, rename, archive or delete')
-        act(m, 'What to show for this builder…', self.current_builder_settings)
+        act(m, 'Builders and what they show…', self.manage_builders, tip='See every builder; change what to show, rename, archive or delete')
         act(m, 'Teach this builder\'s symbols…', self.open_teach)
 
     def _fill_recent(self):
@@ -244,7 +251,6 @@ class MainWindow(QMainWindow):
         sv.addLayout(row)
         row = QHBoxLayout(); row.setSpacing(4)
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
-        b = QPushButton('Names…'); b.setToolTip('Plan name, community and elevation names (they fill the template\'s labels)'); b.clicked.connect(self.edit_names); row.addWidget(b)
         sv.addLayout(row)
         self.saved_lbl = QLabel(''); self.tpl_lbl = QLabel('')       # not shown: the panel stays uncluttered
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
@@ -454,7 +460,8 @@ class MainWindow(QMainWindow):
         self.saved_lbl.setText('✓ Saved automatically; reopen it with File ▸ Open plan.<br><b>Done adding areas?</b> Click <b>Export DWG</b> at the top right.'
                                if self.plan.items else '')
         self.saved_lbl.setTextFormat(Qt.RichText)
-        self.new_act_tb.setVisible(False); self.open_act_tb.setVisible(False)
+        self.new_act_tb.setVisible(False); self.open_act_tb.setVisible(False); self.names_act_tb.setVisible(True)
+        self.show_done_boxes()
         t = self.settings.master_template
         self.tpl_lbl.setText(f'Template: {Path(t).name} (change it in Settings)' if t else 'Template: none, set one in Settings')
         self.save_btn.setEnabled(True)
@@ -489,6 +496,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Redo area', f'The file this area came from isn\'t in the plan any more:\n{it.file}\n\nUse Add files… to add it again.'); return
         self.pages.setCurrentRow(si); self.on_page(si)
         self.region = tuple(it.region); self.editing = i
+        self.show_done_boxes()
         (ax, ay), (bx, by) = self.sheet.to_view(it.region[0], it.region[1]), self.sheet.to_view(it.region[2], it.region[3])
         self.view.show_region(QRectF(min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)))
         res = reattach(self.plan.result(it), it.kind, self.profile, it.region)
@@ -557,7 +565,18 @@ class MainWindow(QMainWindow):
         self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None; self.editing = None
         self._hide_orig_btn(); self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
         self.area_lbl.setText(''); self.clean_btn.setEnabled(False); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
+        self.show_done_boxes()
         self.statusBar().showMessage('Find the electrical sheet (↑ ↓), then drag a box around the floor plan.')
+
+    def show_done_boxes(self):
+        """Areas already in the plan stay outlined on their sheet (green), so nothing is boxed twice."""
+        if not (self.plan and self.sheet): return
+        boxes = []
+        for n, it in enumerate(self.plan.items):
+            if n == self.editing or it.file != self.sheet.path or (it.kind == 'pdf' and it.page != getattr(self.sheet, 'index', 0)): continue
+            (ax, ay), (bx, by) = self.sheet.to_view(it.region[0], it.region[1]), self.sheet.to_view(it.region[2], it.region[3])
+            boxes.append((QRectF(min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)), f'{n + 1}. {it.area_type}'))
+        self.view.show_done(boxes)
 
     def on_region(self, rect: QRectF):
         self.region = self.sheet.region_from_view(rect); self.view.set_mode('pan'); self.teacher = None
@@ -890,6 +909,7 @@ class MainWindow(QMainWindow):
         dele.clicked.connect(lambda: (choice.setdefault('a', 'delete'), d.accept()))
         bb.rejected.connect(d.reject); v.addWidget(bb)
         if not d.exec(): return
+        self._snap()
         if choice.get('a') == 'delete' or not ed.text().strip(('/ ')):
             if obj in self.result.texts: self.result.texts.remove(obj)
             self._sel = None
@@ -897,14 +917,35 @@ class MainWindow(QMainWindow):
             obj.lines = [l.strip() for l in ed.text().split('/') if l.strip()]; obj.review = ''
         self._after_review_change(); self.orig_btn.show(); self.orig_btn.raise_()
 
+    def _snap(self):
+        """Remember the review as it is now, so the next change can be undone."""
+        if not self.result: return
+        import copy as _copy
+        prof = (list(self.profile.symbols), list(self.profile.drop_labels)) if self.profile else None
+        self._undo.append((self.result, _copy.deepcopy((self.result.symbols, self.result.texts)), prof))
+        del self._undo[:-50]
+
+    def undo(self):
+        while self._undo and self._undo[-1][0] is not self.result: self._undo.pop()   # from another area
+        if not self._undo: self.statusBar().showMessage('Nothing to undo.', 3000); return
+        _, (syms, texts), prof = self._undo.pop()
+        self.result.symbols, self.result.texts = syms, texts
+        if prof and self.profile:
+            changed = (len(prof[0]) != len(self.profile.symbols) or prof[1] != self.profile.drop_labels)
+            self.profile.symbols, self.profile.drop_labels = list(prof[0]), list(prof[1])
+            if changed: self._save_quietly(); self.fill_setup()
+        self._sel = None; self.draw_result(); self.fill_review(); self.statusBar().showMessage('Undone.', 3000)
+
     def change_type(self, i):
         s = getattr(self, '_sel', None)
         if s is None or not hasattr(s, 'cls'): return
+        self._snap()
         s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._learn_symbol(s); self._after_review_change()
 
     def delete_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
+        self._snap()
         if hasattr(s, 'cls'): self.result.symbols.remove(s)
         elif s in self.result.texts:
             self.result.texts.remove(s)
@@ -914,6 +955,7 @@ class MainWindow(QMainWindow):
     def ok_sel(self):
         s = getattr(self, '_sel', None)
         if s is None: return
+        self._snap()
         if hasattr(s, 'cls') and s.review: self._learn_symbol(s)     # it was unsure: now it knows
         s.review = ''; self._after_review_change()
 

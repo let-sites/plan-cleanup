@@ -24,7 +24,16 @@ QPushButton[kind="primary"] {{ background: {BLUE}; color: {BLUE_TEXT}; border: n
 QPushButton[kind="primary"]:hover {{ background: {BLUE_HOVER}; }}
 QPushButton[kind="primary"]:disabled {{ background: #cfe4ee; color: #7f97a6; }}
 QPushButton[kind="big"] {{ padding: 9px 18px; font-weight: 600; }}
-QComboBox, QLineEdit, QDoubleSpinBox {{ background: white; border: 1px solid {LINE}; border-radius: 6px; padding: 6px 8px; min-height: 20px; }}
+QLineEdit, QDoubleSpinBox {{ background: white; border: 1px solid {LINE}; border-radius: 6px; padding: 6px 8px; min-height: 20px; }}
+QComboBox {{ background: white; border: 1px solid #cfd6dc; border-radius: 8px; padding: 6px 30px 6px 12px; min-height: 20px; }}
+QComboBox:hover {{ border-color: #aebbc6; background: #fbfcfd; }}
+QComboBox:focus, QComboBox:on {{ border-color: {ACCENT}; }}
+QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; background: transparent; }}
+QComboBox::down-arrow {{ image: url(@CHEVRON@); width: 10px; height: 14px; }}
+QComboBox QAbstractItemView {{ background: white; border: 1px solid {LINE}; border-radius: 8px; padding: 4px; outline: none;
+    selection-background-color: #e3f1f8; selection-color: {INK}; }}
+QTableWidget QComboBox {{ border: none; border-radius: 0; background: transparent; padding: 4px 26px 4px 8px; }}
+QTableWidget QComboBox:hover {{ background: #f4f8fb; }}
 QListWidget, QTableWidget {{ background: white; border: 1px solid {LINE}; border-radius: 8px; }}
 QListWidget::item:selected {{ background: #e3f1f8; color: {INK}; }}
 QListWidget#sheets {{ background: {BG}; border: none; outline: none; }}
@@ -39,7 +48,8 @@ QProgressDialog {{ background: white; }}
 """
 
 def apply(app):
-    app.setStyleSheet(QSS)
+    chev = asset('chevron.svg')
+    app.setStyleSheet(QSS.replace('@CHEVRON@', chev.as_posix() if chev else ''))
     icon = asset('icon.png')
     if icon:
         from PySide6.QtGui import QIcon

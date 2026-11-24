@@ -38,10 +38,12 @@ def nearest_anchor(anc, x, y, maxd=8):
         if d < maxd and (best is None or d < best[0]): best = (d, k, ax, ay)
     return best
 
-def cut_template(img, region, cx, cy, half):
-    x0 = int(round((cx - half - region[0]) * S)); y0 = int(round((cy - half - region[1]) * S)); n = int(round(2 * half * S))
-    out = np.zeros((n, n), dtype=img.dtype)          # stays square and centred, even at the edge of the box
-    sx0, sy0 = max(0, x0), max(0, y0); sx1, sy1 = min(img.shape[1], x0 + n), min(img.shape[0], y0 + n)
+def cut_template(img, region, cx, cy, half, half_y=None):
+    hy = half_y or half
+    x0 = int(round((cx - half - region[0]) * S)); y0 = int(round((cy - hy - region[1]) * S))
+    n = int(round(2 * half * S)); ny = int(round(2 * hy * S))
+    out = np.zeros((ny, n), dtype=img.dtype)         # stays the full size and centred, even at the edge of the box
+    sx0, sy0 = max(0, x0), max(0, y0); sx1, sy1 = min(img.shape[1], x0 + n), min(img.shape[0], y0 + ny)
     if sx1 > sx0 and sy1 > sy0: out[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = img[sy0:sy1, sx0:sx1]
     return out
 
@@ -57,7 +59,7 @@ def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'c
         best = None; per = {}
         for ex, k, t in T:
             if ex.kind != kind: continue
-            m = ex.half + search
+            m = max(ex.half, getattr(ex, 'half_y', 0) or ex.half) + search      # turned, a tall box is a wide one
             x0 = int(round((ax - m - region[0]) * S)); y0 = int(round((ay - m - region[1]) * S)); n = int(round(2 * m * S))
             if x0 < 0 or y0 < 0: continue
             win = img[y0:y0 + n, x0:x0 + n]

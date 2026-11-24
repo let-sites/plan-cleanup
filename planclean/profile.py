@@ -39,6 +39,7 @@ class SymbolExample:
     rotations: list          # 90 degree turns to try
     template: str            # base64 PNG at Profile.TEMPLATE_SCALE px/pt
     threshold: float = 0.6
+    half_y: float = 0.0      # half window height when it isn't square (a skinny symbol); 0 = same as half
     learned: bool = False    # saved from the review (Change type / Looks right), not taught
     where: list = field(default_factory=list)   # [file, page, x, y] where it was taught (page points), to show it again
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])

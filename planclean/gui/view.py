@@ -16,7 +16,7 @@ class SheetView(QGraphicsView):
     exampleMoved = Signal(str, QPointF)      # a taught symbol's marker dragged to a new centre
     examplePicked = Signal(str)              # a taught symbol's marker clicked
     exampleResized = Signal(str, int)        # +1 bigger, -1 smaller
-    exampleSized = Signal(str, float)        # a taught symbol's box edge dragged: new half size, in view units
+    exampleSized = Signal(str, float, float) # a taught symbol's box edge dragged: new half width and height, in view units
     itemPicked = Signal(object)
 
     def __init__(self):
@@ -132,9 +132,9 @@ class SheetView(QGraphicsView):
             self._band = self.scene_.addRect(QRectF(p, p), pen, QBrush(QColor(74, 144, 184, 35)))
             return
         if self.mode == 'teach' and e.button() == Qt.LeftButton:
-            m = self._ex_edge(e.position().toPoint())
-            if m is not None:                                    # grab a box edge: resize
-                self._drag = (m, p, m.pos(), 'size'); self.viewport().setCursor(Qt.SizeFDiagCursor); return
+            m, side = self._ex_edge(e.position().toPoint())
+            if m is not None:                                    # grab a box edge (width or height) or a corner (both)
+                self._drag = (m, p, m.pos(), 'size'); self._side = side; self.viewport().setCursor(self._side_cursor(side)); return
             m = self._ex_at(e.position().toPoint())
             if m is not None:                                    # grab a taught symbol
                 self._drag = (m, p, m.pos(), False); self.viewport().setCursor(Qt.ClosedHandCursor); return
@@ -157,12 +157,15 @@ class SheetView(QGraphicsView):
         if self._drag is not None:
             m, start, pos0, how = self._drag; p = self.mapToScene(e.position().toPoint())
             if how == 'size' or how == 'sized':
-                h = max(2.0, abs(p.x() - pos0.x()), abs(p.y() - pos0.y()))
-                m.setRect(-h, -h, 2 * h, 2 * h); self._drag = (m, start, pos0, 'sized'); return
+                r = m.rect(); hw, hh = r.width() / 2, r.height() / 2
+                if 'x' in self._side: hw = max(2.0, abs(p.x() - pos0.x()))
+                if 'y' in self._side: hh = max(2.0, abs(p.y() - pos0.y()))
+                m.setRect(-hw, -hh, 2 * hw, 2 * hh); self._drag = (m, start, pos0, 'sized'); return
             m.setPos(pos0 + (p - start)); self._drag = (m, start, pos0, True); return
         if self.mode == 'teach':
             pos = e.position().toPoint()
-            self.viewport().setCursor(Qt.SizeFDiagCursor if self._ex_edge(pos) is not None else
+            m, side = self._ex_edge(pos)
+            self.viewport().setCursor(self._side_cursor(side) if m is not None else
                                       Qt.OpenHandCursor if self._ex_at(pos) is not None else Qt.CrossCursor)
         super().mouseMoveEvent(e)
 
@@ -170,7 +173,7 @@ class SheetView(QGraphicsView):
         if self._drag is not None:
             m, start, pos0, moved = self._drag; self._drag = None
             self.viewport().setCursor(Qt.OpenHandCursor)
-            if moved == 'sized': self.exampleSized.emit(m.data(1), m.rect().width() / 2); return
+            if moved == 'sized': self.exampleSized.emit(m.data(1), m.rect().width() / 2, m.rect().height() / 2); return
             if moved == 'size': self.examplePicked.emit(m.data(1)); return
             if moved is True and (m.pos() - pos0).manhattanLength() > 0.5: self.exampleMoved.emit(m.data(1), m.pos())
             else: self.examplePicked.emit(m.data(1))
@@ -205,16 +208,21 @@ class SheetView(QGraphicsView):
             t.setFlag(t.GraphicsItemFlag.ItemIgnoresTransformations); t.setPos(r.left() + 4, r.top() + 4); t.setZValue(4)
             self.done_items.append(t)
 
-    def add_ex_marker(self, eid, x, y, color, label, r=9):
+    @staticmethod
+    def _side_cursor(side):
+        return {'x': Qt.SizeHorCursor, 'y': Qt.SizeVerCursor}.get(side, Qt.SizeFDiagCursor)
+
+    def add_ex_marker(self, eid, x, y, color, label, r=9, ry=None):
         """A taught symbol on the plan: the box it captured. Hover shows a hand; drag it to re-centre it."""
         self.remove_ex_marker(eid)
         pen = QPen(QColor(color), 2); pen.setCosmetic(True)
-        ring = self.scene_.addRect(-r, -r, 2 * r, 2 * r, pen, QBrush(QColor(46, 158, 91, 30)))
+        ry = r if ry is None else ry
+        ring = self.scene_.addRect(-r, -ry, 2 * r, 2 * ry, pen, QBrush(QColor(46, 158, 91, 30)))
         cross = QPen(QColor(color), 1); cross.setCosmetic(True)
         c = max(3, r * 0.4)
         for a, b in (((-c, 0), (c, 0)), ((0, -c), (0, c))):
             l = self.scene_.addLine(a[0], a[1], b[0], b[1], cross); l.setParentItem(ring)
-        t = self.scene_.addSimpleText(label, QFont('Arial', 7)); t.setBrush(QColor(color)); t.setPos(r + 1, -r); t.setParentItem(ring)
+        t = self.scene_.addSimpleText(label, QFont('Arial', 7)); t.setBrush(QColor(color)); t.setPos(r + 1, -ry); t.setParentItem(ring)
         ring.setPos(x, y); ring.setZValue(12); ring.setData(1, eid); ring.setToolTip('Drag to re-centre this taught symbol')
         self.ex_markers[eid] = ring
 
@@ -228,13 +236,18 @@ class SheetView(QGraphicsView):
             p = it.pen(); p.setColor(QColor('#e0a100' if k == eid else '#2e9e5b')); p.setWidthF(3 if k == eid else 2); it.setPen(p)
 
     def _ex_edge(self, pos):
-        """A taught symbol whose box edge is under the mouse (within a few screen pixels): grab it to resize."""
-        sp = self.mapToScene(pos); tol = 5 / max(self.transform().m11(), 1e-6)
+        """A taught symbol whose box edge is under the mouse (within a few screen pixels): grab it to resize.
+        Returns (marker, 'x' | 'y' | 'xy'): a side edge changes the width, top or bottom the height, a corner both."""
+        sp = self.mapToScene(pos); tol = 5 / max(abs(self.transform().m11()) + abs(self.transform().m12()), 1e-6)
         for it in self.ex_markers.values():
-            r = it.rect(); c = it.pos(); h = r.width() / 2
+            r = it.rect(); c = it.pos(); hw, hh = r.width() / 2, r.height() / 2
             dx, dy = abs(sp.x() - c.x()), abs(sp.y() - c.y())
-            if max(dx, dy) <= h + tol and max(dx, dy) >= h - tol: return it
-        return None
+            if dx > hw + tol or dy > hh + tol: continue
+            onx, ony = abs(dx - hw) <= tol, abs(dy - hh) <= tol
+            if onx and ony: return it, 'xy'
+            if onx: return it, 'x'
+            if ony: return it, 'y'
+        return None, ''
 
     def _ex_at(self, pos):
         for it in self.items(pos):

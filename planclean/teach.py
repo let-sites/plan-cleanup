@@ -26,7 +26,7 @@ class Teacher:
         self.img = detect.symbol_image(sym, self.region, self.texts)
         self.anchors = detect.anchors(sym) + text_anchors(self.texts)
 
-    def example_at(self, x, y, cls, half=None, snap=True):
+    def example_at(self, x, y, cls, half=None, snap=True, half_y=0.0):
         """Make an example from a click at page point (x, y). Snaps to the nearest symbol centre (snap=False: exactly there)."""
         a = detect.nearest_anchor(self.anchors, x, y) if snap else None
         if a:
@@ -38,9 +38,9 @@ class Teacher:
             if near: kind = near[1]                 # same kind of symbol, just centred where you put it
         if half is None:
             half = max(5.0 if kind == 'glyph' else 8.0, self.symbol_half(cx, cy))   # the whole symbol, not just its middle
-        t = detect.cut_template(self.img, self.region, cx, cy, half)
+        t = detect.cut_template(self.img, self.region, cx, cy, half, half_y or None)
         rots = [0, 1, 2, 3] if (cls in ORIENTED or kind == 'glyph') else [0]
-        ex = SymbolExample(cls=cls, kind=kind, half=half, rotations=rots, template=img_to_b64(t),
+        ex = SymbolExample(cls=cls, kind=kind, half=half, half_y=half_y or 0.0, rotations=rots, template=img_to_b64(t),
                            threshold=0.7 if kind == 'glyph' else 0.6)
         return ex, (cx, cy)
 

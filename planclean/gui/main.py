@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
         self.save_btn.setToolTip('The last step: plans and options go on your master template, elevations in their own drawing')
         tb.addWidget(self.save_btn)
         b = _big('\u2699\ufe0e'); b.setToolTip('Settings  (⌘,)'); b.setMinimumWidth(52)
-        f = b.font(); f.setPointSize(f.pointSize() + 4); b.setFont(f)
+        b.setStyleSheet('QPushButton{font-size:26px;font-weight:400;padding:0px 14px}')
         b.clicked.connect(self.open_settings); tb.addWidget(b)
 
     def _menus(self):
@@ -337,19 +337,23 @@ class MainWindow(QMainWindow):
         t = QLabel('Teach this builder\'s symbols'); t.setStyleSheet('font-size:18px;font-weight:700;margin:2px 0 4px 0'); v.addWidget(t)
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
         self.scale_cb.currentIndexChanged.connect(self.on_scale); row.addWidget(self.scale_cb); v.addLayout(row)
-        self.roles_lbl = QLabel('Line types on this plan'); v.addWidget(self.roles_lbl)
+        self.teach_tabs = QTabWidget(); self.teach_tabs.setDocumentMode(True)
+        sym_w = QWidget(); sv = QVBoxLayout(sym_w); sv.setContentsMargins(0, 8, 0, 0)
+        role_w = QWidget(); rv = QVBoxLayout(role_w); rv.setContentsMargins(0, 8, 0, 0)
+        self.roles_lbl = QLabel('Line types on this plan'); rv.addWidget(self.roles_lbl)
         self.roles = QTableWidget(0, 3); self.roles.setHorizontalHeaderLabels(['Line type', 'Count', 'What it is'])
         self.roles.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch); self.roles.verticalHeader().hide()
         self.roles.itemSelectionChanged.connect(self.on_role_select); self.roles.cellClicked.connect(self._role_clicked)
         self.roles.setSelectionBehavior(QTableWidget.SelectRows); self.roles.setSelectionMode(QTableWidget.SingleSelection)
-        v.addWidget(self.roles, 2)
-        b = QPushButton('Clear highlight'); b.setToolTip('Stop highlighting the line type (or press Esc, or click the row again)')
-        b.clicked.connect(lambda: self.roles.clearSelection()); v.addWidget(b, 0, Qt.AlignLeft)
-        self.sym_lbl = QLabel('Symbol examples'); v.addWidget(self.sym_lbl)
+        rv.addWidget(self.roles, 1)
+        self.sym_lbl = QLabel('Symbol examples'); sv.addWidget(self.sym_lbl)
         self.examples = QTableWidget(0, 3); self.examples.setHorizontalHeaderLabels(['Builder symbol', 'Is a…', ''])
         self.examples.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); self.examples.verticalHeader().hide()
         self.examples.setSelectionBehavior(QTableWidget.SelectRows)
-        self.examples.setIconSize(QPixmap(56, 56).size()); v.addWidget(self.examples, 2)
+        self.examples.setIconSize(QPixmap(56, 56).size()); sv.addWidget(self.examples, 1)
+        self.teach_tabs.addTab(sym_w, 'Symbols'); self.teach_tabs.addTab(role_w, 'Line types')
+        self.teach_tabs.currentChanged.connect(lambda i: i == 0 and self.roles.clearSelection())   # leaving line types: stop highlighting
+        v.addWidget(self.teach_tabs, 1)
         self.examples.cellClicked.connect(self.goto_example)
         self.examples.itemSelectionChanged.connect(lambda: self.view.select_ex_marker(
             self.examples.item(self.examples.currentRow(), 0).data(Qt.UserRole) if self.examples.currentRow() >= 0 and self.examples.item(self.examples.currentRow(), 0) else None))
@@ -654,21 +658,21 @@ class MainWindow(QMainWindow):
         self.roles.setRowCount(0); self.examples.setRowCount(0)
         if not self.profile or not self.sheet: return
         if self.sheet.kind == 'pdf':
-            self.roles_lbl.setText('Line types on this plan (select one to see it highlighted)')
+            self.roles_lbl.setText('Click a line type to see it highlighted on the plan.'); self.teach_tabs.setTabText(1, 'Line types')
             if not self.region: return
             paths = [p for p in self.sheet.page.get_drawings() if in_region(p, self.region)]
             st = sorted(pens_in(paths).items(), key=lambda kv: -kv[1]['count'])
             for k, s in st:
                 self.profile.pen_roles.setdefault(k, 'misc')
                 self._role_row(k, s['count'], self.profile.pen_roles, PEN_ROLES)
-            self.sym_lbl.setText('Symbol examples (click one of each kind on the plan)')
+            self.sym_lbl.setText('Click one of each kind of symbol on the plan.'); self.teach_tabs.setTabText(0, 'Symbols')
             for ex in self.profile.symbols: self._example_row(ex)
             self.teach_btn.setEnabled(True)
         else:
             layers, blocks = dwgin.inventory(self.sheet.doc)
-            self.roles_lbl.setText('Layers in this drawing')
+            self.roles_lbl.setText('Layers in this drawing'); self.teach_tabs.setTabText(1, 'Layers')
             for k, n in layers.most_common(): self._role_row(k, n, self.profile.dwg_layer_roles, PEN_ROLES, default='misc')
-            self.sym_lbl.setText('Builder blocks: choose what each one is (leave blank to keep as lines)')
+            self.sym_lbl.setText('Builder blocks: choose what each one is (leave blank to keep as lines)'); self.teach_tabs.setTabText(0, 'Blocks')
             for k, n in blocks.most_common(): self._block_row(k, n)
             self.teach_btn.setEnabled(False)
 
@@ -824,18 +828,26 @@ class MainWindow(QMainWindow):
         """Show a taught symbol on the plan (when it was taught on this sheet), sized to what it captured."""
         w = getattr(ex, 'where', None) or []
         if len(w) < 4 or not self.sheet or w[0] != self.sheet.path or w[1] != getattr(self.sheet, 'index', 0): return
-        (vx, vy), (vx2, vy2) = self.sheet.to_view(w[2], w[3]), self.sheet.to_view(w[2] + ex.half, w[3])
-        hv = math.hypot(vx2 - vx, vy2 - vy)                       # the sheet may be turned: any direction
-        self.view.add_ex_marker(ex.id, vx, vy, '#2e9e5b', sym_label(ex.cls).split(' (')[0], hv)
+        per, swap = self._view_axes(w[2], w[3])
+        hx, hy = ex.half * per, (getattr(ex, 'half_y', 0.0) or ex.half) * per
+        if swap: hx, hy = hy, hx
+        vx, vy = self.sheet.to_view(w[2], w[3])
+        self.view.add_ex_marker(ex.id, vx, vy, '#2e9e5b', sym_label(ex.cls).split(' (')[0], hx, hy)
+
+    def _view_axes(self, x, y):
+        """View units per page point, and whether the page's x runs up and down on screen (a turned sheet)."""
+        (vx, vy), (vx2, vy2) = self.sheet.to_view(x, y), self.sheet.to_view(x + 1, y)
+        return (math.hypot(vx2 - vx, vy2 - vy) or 1.0), abs(vy2 - vy) > abs(vx2 - vx)
 
     def show_ex_markers(self):
         self.view.remove_ex_marker()
         if self.profile and self.sheet and self.sheet.kind == 'pdf':
             for ex in self.profile.symbols: self._ex_marker(ex)
 
-    def _replace_example(self, old, x, y, half=None):
+    def _replace_example(self, old, x, y, half=None, half_y=None):
         if self.teacher is None: self.teacher = Teacher(self.sheet.page, self.region, self.profile)
-        ex, (cx, cy) = self.teacher.example_at(x, y, old.cls, half=half or old.half, snap=False)
+        ex, (cx, cy) = self.teacher.example_at(x, y, old.cls, half=half or old.half, snap=False,
+                                               half_y=getattr(old, 'half_y', 0.0) if half_y is None else half_y)
         ex.id = old.id; ex.learned = getattr(old, 'learned', False); ex.rotations = old.rotations; ex.threshold = old.threshold
         ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
         i = next((k for k, e in enumerate(self.profile.symbols) if e.id == old.id), None)
@@ -857,18 +869,19 @@ class MainWindow(QMainWindow):
     def example_resized(self, eid, step):
         old = self._example(eid)
         if old is None or not self.region or len(getattr(old, 'where', []) or []) < 4: return
-        half = min(MAX_HALF, max(3.0, old.half + 0.75 * step))
-        self._replace_example(old, old.where[2], old.where[3], half)
+        half = min(MAX_HALF, max(3.0, old.half + 0.75 * step)); hy = getattr(old, 'half_y', 0.0)
+        if hy: hy = min(MAX_HALF, max(3.0, hy * half / old.half))         # a skinny box keeps its shape
+        self._replace_example(old, old.where[2], old.where[3], half, hy)
         self.statusBar().showMessage(f'Box {"bigger" if step > 0 else "smaller"}, saved.', 3000)
 
-    def example_sized(self, eid, half_view):
+    def example_sized(self, eid, hw_view, hh_view):
         old = self._example(eid)
         if old is None or not self.region or len(getattr(old, 'where', []) or []) < 4: return
         x, y = old.where[2], old.where[3]
-        (vx, vy), (vx2, vy2) = self.sheet.to_view(x, y), self.sheet.to_view(x + 1, y)
-        per = math.hypot(vx2 - vx, vy2 - vy) or 1.0
-        half = min(MAX_HALF, max(3.0, half_view / per))
-        self._replace_example(old, x, y, half); self.view.select_ex_marker(eid); self._picked_ex = eid
+        per, swap = self._view_axes(x, y)
+        if swap: hw_view, hh_view = hh_view, hw_view
+        half = min(MAX_HALF, max(3.0, hw_view / per)); hy = min(MAX_HALF, max(3.0, hh_view / per))
+        self._replace_example(old, x, y, half, 0.0 if abs(hy - half) < 0.3 else hy); self.view.select_ex_marker(eid); self._picked_ex = eid
         self.statusBar().showMessage('Box resized and saved.', 3000)
 
     def example_picked(self, eid):

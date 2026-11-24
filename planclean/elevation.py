@@ -188,6 +188,33 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
         r = rects[i]
         if max(r[2] - r[0], r[3] - r[1]) < 30 and any(_near(pt, b, 4) for pt in ends[i] for _, b in drop_w) and \
            any(abs(pt[0] - q[0]) < 1.5 and abs(pt[1] - q[1]) < 1.5 for pt in ends[i] for q in tipsL): gone.add(i)
+    def straight(p):
+        if len(p['items']) != 1 or p['items'][0][0] != 'l': return None
+        a, b = p['items'][0][1] * M, p['items'][0][2] * M
+        if abs(a.y - b.y) < 0.5: return 'h'
+        if abs(a.x - b.x) < 0.5: return 'v'
+        return None
+    # 5. dimension lines inside the building's width: a straight line ending on a tick, its ticks,
+    #    and the little figures written along it
+    dims = []
+    for i, p in enumerate(pl):
+        if i in gone or i in below or pen_key(p) == opk or not straight(p) or (p.get('width') or 0) < 0.1: continue
+        r = rects[i]
+        if max(r[2] - r[0], r[3] - r[1]) < 12: continue
+        if any(_near(pt, t, 1.5) for pt in ends[i] for t in ticks): gone.add(i); dims.append((rects[i], pen_key(p)))
+    for i, p in enumerate(pl):
+        if i in gone or i in below or pen_key(p) == opk or i in attached: continue
+        r = rects[i]
+        if max(r[2] - r[0], r[3] - r[1]) < 8 and any(pk == pen_key(p) and touches(r, _grow(d, 4), 0) for d, pk in dims): gone.add(i)
+    # 6. a line that runs out past the building and stops in empty space (a level or extension line)
+    keep_r = [rects[k] for k, q in enumerate(pl) if k not in gone and not (is_filled(q) and max(rects[k][2] - rects[k][0], rects[k][3] - rects[k][1]) < 8)]
+    for i, p in enumerate(pl):
+        if i in gone or i in below or pen_key(p) == opk or straight(p) != 'h' or i in attached: continue
+        r = rects[i]
+        if r[0] < X0 - 8 or r[2] > X1 + 8:
+            free = [pt for pt in ends[i] if (pt[0] < X0 - 8 or pt[0] > X1 + 8) and
+                    not any(touches((pt[0], pt[1], pt[0], pt[1]), q, 1.0) for k, q in enumerate(keep_r) if q != r)]
+            if free: gone.add(i)
     tips = [pt for i in gone if not is_filled(pl[i]) for pt in ends[i]]
     for i, p in enumerate(pl):
         if i in gone or i in below or not is_filled(p): continue

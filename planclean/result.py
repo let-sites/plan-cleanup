@@ -15,6 +15,8 @@ class Sym:
     review: str = ""         # why a person should look at it ('' = fine)
     src: tuple = ()          # where it came from on the source sheet (page points)
     wall: float | None = None   # distance from the centre back to the wall it sits on (drawing units)
+    user_turn: int = 0       # quarter turns a person gave it in the review, clockwise degrees (what the builder learns from)
+    fix: int = 0             # the turn the builder's learned correction already gave it, clockwise degrees
     turn: float = 0.0        # extra turn a person gave it in the review, degrees (symbols that don't sit on a wall)
     shape: str = ""          # the type its drawing matched, before a note or a wall changed it ('' = same / unknown)
 
@@ -39,6 +41,15 @@ class Result:
 
     def review_items(self):
         return [s for s in self.symbols if s.review] + [t for t in self.texts if t.review]
+
+def turn_sym(s, deg):
+    """Turn a symbol clockwise on the plan by a multiple of 90 degrees."""
+    from .symbols import ORIENTED
+    k = int(round(deg / 90.0)) % 4
+    if s.cls in ORIENTED:
+        for _ in range(k): s.dx, s.dy = s.dy, -s.dx
+    else:
+        s.turn = ((getattr(s, 'turn', 0.0) or 0.0) - 90.0 * k) % 360
 
 def rotation_deg(s: Sym):
     return math.degrees(math.atan2(s.dy, s.dx)) - 90.0

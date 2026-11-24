@@ -63,7 +63,23 @@ class Profile:
     outlets: str = 'all'                    # 'all' | 'outside' (exterior and garage only) | 'none'
     detectors: bool = True                  # smoke and smoke/CO detectors
     exhaust_fans: bool = True
+    turns: dict = field(default_factory=dict)   # symbol type -> {'90': count, ...}: how far people turned it in review (learned)
     TEMPLATE_SCALE = 6
+
+    def turn_fix(self, cls):
+        """The turn to give a symbol type on this builder's plans: when most of the ones people checked were turned
+        the same way (at least twice), the app had it wrong for this builder."""
+        c = self.turns.get(cls) or {}
+        tot = sum(c.values())
+        if not tot: return 0
+        a, n = max(c.items(), key=lambda kv: kv[1])
+        return int(a) if a != '0' and n >= 2 and n > tot / 2 else 0
+
+    def learn_turns(self, symbols):
+        for s in symbols:
+            if s.cls == 'remove': continue
+            a = str(int((getattr(s, 'fix', 0) + getattr(s, 'user_turn', 0)) % 360))
+            self.turns.setdefault(s.cls, {}); self.turns[s.cls][a] = self.turns[s.cls].get(a, 0) + 1
 
     @staticmethod
     def load(path):

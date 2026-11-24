@@ -17,7 +17,7 @@ from planclean.engine import clean_pdf, pens_in, guess_roles
 from planclean.teach import Teacher
 from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
-from planclean.result import Result, Text, turned
+from planclean.result import Result, Text, turned, turn_sym
 from planclean.jobs import CleanJob, attach_to_page
 from planclean.plan import Plan, combine, reattach, find_board, on_board, LEVELS, level_rank
 from planclean.preview import BlockShapes
@@ -157,14 +157,22 @@ class MainWindow(QMainWindow):
             self.addAction(a)
         self._toolbar(); self._docks(); self._menus()
         # big on/off switch for the builder's original drawing, pinned to the corner of the plan
-        self.orig_btn = QPushButton('Show original  (O)'); self.orig_btn.setCheckable(True); self.orig_btn.setObjectName('origbtn')
+        self.orig_btn = QPushButton('Show original'); self.orig_btn.setCheckable(True); self.orig_btn.setObjectName('origbtn')
         self.orig_btn.setToolTip('Flip the builder\'s original drawing on and off underneath the cleaned plan (key: O)')
         self.orig_btn.setCursor(Qt.PointingHandCursor)
         self.orig_btn.setStyleSheet('#origbtn{background:white;border:1px solid #c9d3db;border-radius:8px;padding:8px 16px;'
                                     'font-size:14px;font-weight:600;color:#1f2a33}'
                                     '#origbtn:hover{background:#edf3f7}'
                                     '#origbtn:checked{background:#4a90b8;border-color:#4a90b8;color:white}')
-        self.orig_btn.toggled.connect(self._orig_toggled); self.view.set_corner_widget(self.orig_btn); self.orig_btn.hide()
+        self.orig_btn.toggled.connect(self._orig_toggled)
+        self.undo_btn = QPushButton('↶'); self.undo_btn.setObjectName('undobtn'); self.undo_btn.setToolTip('Undo  (⌘Z)')
+        self.undo_btn.setCursor(Qt.PointingHandCursor); self.undo_btn.clicked.connect(self.undo)
+        self.undo_btn.setStyleSheet('#undobtn{background:white;border:1px solid #c9d3db;border-radius:8px;padding:2px 12px;'
+                                    'font-size:22px;color:#1f2a33}#undobtn:hover{background:#edf3f7}#undobtn:disabled{color:#b8c2ca}')
+        corner = QWidget(); ch = QHBoxLayout(corner); ch.setContentsMargins(0, 0, 0, 0); ch.setSpacing(8)
+        ch.addWidget(self.undo_btn); ch.addWidget(self.orig_btn); self._corner = corner
+        self.undo_btn.setFixedHeight(self.orig_btn.sizeHint().height())
+        self.view.set_corner_widget(corner); self.orig_btn.hide(); self.undo_btn.hide()
         a = QAction(self); a.setShortcut(QKeySequence('O')); a.triggered.connect(lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
         self.addAction(a)
         self.setAcceptDrops(True); self._overlay = DropOverlay(self)
@@ -543,6 +551,8 @@ class MainWindow(QMainWindow):
             self.plan.items[n].level = self.level_cb.currentData() or ''; self.plan.save()
             msg = f'Updated area {n + 1} in the plan.'
         else:
+            if self.profile and self.result.stats.get('kind') != 'elevation':
+                self.profile.learn_turns(self.result.symbols); self._save_quietly()   # the turns you fixed: next time it knows
             lab = getattr(self.sheet, 'label', self.sheet.title)
             self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab, self.area_type.currentText(),
                           self.elev_cb.currentData() or '', self.level_cb.currentData() if not is_elev(self.area_type.currentText()) else '')
@@ -941,7 +951,7 @@ class MainWindow(QMainWindow):
         parts = ', '.join(f'{n} {sym_label(k).split(" (")[0].lower()}' for k, n in c.most_common())
         self.summary.setText(f'<b>{len(res.symbols)} symbols:</b> {parts}.<br><b>{sum(1 for t in res.texts if t.kind == "room")} room names</b>, '
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
-        self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
+        self.draw_result(); self.fill_review(); self._show_corner(True)
         self.save_btn.setEnabled(True)
         self._update_heights_btn()
         QTimer.singleShot(300, lambda r=res: self.check_scale(r))
@@ -1012,14 +1022,22 @@ class MainWindow(QMainWindow):
                 self.plan.elevations.append(n); self.plan.save(); self.elev_cb.addItem(n, n); return n
         return ''
 
+    def _show_corner(self, on):
+        """The Undo and Show original buttons over the cleaned plan."""
+        self.orig_btn.setVisible(on); self.undo_btn.setVisible(on); self._update_undo_btn()
+        c = self._corner; c.adjustSize(); c.move(self.view.viewport().width() - c.width() - 14, 14); c.raise_()
+
+    def _update_undo_btn(self):
+        self.undo_btn.setEnabled(any(u[0] is self.result for u in getattr(self, '_undo', [])))
+
     def _hide_orig_btn(self):
-        self.orig_btn.blockSignals(True); self.orig_btn.setChecked(False); self.orig_btn.setText('Show original  (O)')
-        self.orig_btn.blockSignals(False); self.orig_btn.hide()
+        self.orig_btn.blockSignals(True); self.orig_btn.setChecked(False); self.orig_btn.setText('Show original')
+        self.orig_btn.blockSignals(False); self._show_corner(False)
         self.show_orig.blockSignals(True); self.show_orig.setChecked(False); self.show_orig.blockSignals(False)
         if self.view.page_item is not None: self.view.page_item.setOpacity(1.0)
 
     def _orig_toggled(self, on):
-        self.orig_btn.setText('Hide original  (O)' if on else 'Show original  (O)')
+        self.orig_btn.setText('Hide original' if on else 'Show original')
         if self.show_orig.isChecked() != on: self.show_orig.setChecked(on)   # redraws
         else: self.draw_result()
 
@@ -1144,7 +1162,7 @@ class MainWindow(QMainWindow):
             self._sel = None
         else:
             obj.lines = [l.strip() for l in ed.text().split('/') if l.strip()]; obj.review = ''
-        self._after_review_change(); self.orig_btn.show(); self.orig_btn.raise_()
+        self._after_review_change(); self._show_corner(True)
 
     def _snap(self):
         """Remember the review as it is now, so the next change can be undone."""
@@ -1152,7 +1170,7 @@ class MainWindow(QMainWindow):
         import copy as _copy
         prof = (list(self.profile.symbols), list(self.profile.drop_labels)) if self.profile else None
         self._undo.append((self.result, _copy.deepcopy((self.result.symbols, self.result.texts)), prof))
-        del self._undo[:-50]
+        del self._undo[:-50]; self._update_undo_btn()
 
     def undo(self):
         while self._undo and self._undo[-1][0] is not self.result: self._undo.pop()   # from another area
@@ -1163,7 +1181,7 @@ class MainWindow(QMainWindow):
             changed = (len(prof[0]) != len(self.profile.symbols) or prof[1] != self.profile.drop_labels)
             self.profile.symbols, self.profile.drop_labels = list(prof[0]), list(prof[1])
             if changed: self._save_quietly(); self.fill_setup()
-        self._sel = None; self.draw_result(); self.fill_review(); self._update_heights_btn(); self.statusBar().showMessage('Undone.', 3000)
+        self._sel = None; self.draw_result(); self.fill_review(); self._update_heights_btn(); self._update_undo_btn(); self.statusBar().showMessage('Undone.', 3000)
 
     def change_type(self, i):
         s = getattr(self, '_sel', None)
@@ -1264,10 +1282,7 @@ class MainWindow(QMainWindow):
         if s is None or not hasattr(s, 'cls'): self.statusBar().showMessage('Click a symbol first, then rotate it.', 3000); return
         self._snap()
         before = (round(s.dx, 3), round(s.dy, 3), getattr(s, 'turn', 0.0))
-        if s.cls in ORIENTED:
-            s.dx, s.dy = (s.dy, -s.dx) if step > 0 else (-s.dy, s.dx)
-        else:
-            s.turn = ((getattr(s, 'turn', 0.0) or 0.0) - 90.0 * step) % 360
+        turn_sym(s, 90 * step); s.user_turn = int((getattr(s, 'user_turn', 0) + 90 * step) % 360)
         s.review = ''
         try:      # kept so the automatic turning can be checked against what people fix
             from planclean.profile import config_dir

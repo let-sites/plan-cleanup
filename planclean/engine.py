@@ -5,7 +5,7 @@ import numpy as np
 from . import wiring, detect, ocr
 from .vec import sample_lines_dir, polylines, pen_key, in_region, sample_lines, is_filled, page_text, text_anchors
 from .profile import Profile, NOTE_WORDS
-from .result import Result, Sym, Text
+from .result import Result, Sym, Text, turn_sym
 from .symbols import ORIENTED
 
 def page_paths(page):
@@ -695,6 +695,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if s.cls in ORIENTED and d <= 18: s.wall = d * K      # the block's insert point goes on this wall line
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"
         if not s.review and s.cls in ORIENTED and d > 18: s.review = 'No wall nearby to face'
+        fix = profile.turn_fix(s.cls)
+        if fix: turn_sym(s, fix); s.fix = fix              # this builder's plans: people kept turning this type
         res.symbols.append(s)
     for w in rooms:
         X, Y = tx(w['cx'], w['cy']); res.texts.append(Text('room', [w['room']], X, Y))

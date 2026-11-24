@@ -24,6 +24,7 @@ class PlanItem:
     result_file: str           # pickled Result, inside the plan folder
     area_type: str = 'Electrical plan'
     elevation: str = ''          # which elevation's box it goes in on the template ('' = the first free one)
+    level: str = ''              # 'Upper' | 'Main' | 'Lower' ('' = read from its title)
     added: float = 0.0
 
 
@@ -88,9 +89,9 @@ class Plan:
         with open(Path(self.folder) / name, 'wb') as fh: pickle.dump(r, fh)
         return name
 
-    def add(self, res, file, page, kind, region, label, area_type='Electrical plan', elevation=''):
+    def add(self, res, file, page, kind, region, label, area_type='Electrical plan', elevation='', level=''):
         it = PlanItem(label=label, file=file, page=page, kind=kind, region=tuple(region), result_file=self._store(res),
-                      area_type=area_type, elevation=elevation, added=time.time())
+                      area_type=area_type, elevation=elevation, level=level, added=time.time())
         self.items.append(it); self.save(); return it
 
     def replace(self, i, res, region=None):
@@ -220,30 +221,51 @@ def _set_label(e, text):
     e.text = (m.group(1) if m else '') + text.replace('\\', '/')
 
 
+LEVELS = ['Upper', 'Main', 'Lower']
+LEVEL_GAP = 240.0      # inches between the levels of one plan (20')
+
+
+def level_rank(res):
+    """Where a level goes in a row of levels: upper floors first, then the main floor, then the lower ones."""
+    import re
+    t = ' '.join(' '.join(x.lines) for x in res.texts if x.kind == 'title').upper()
+    if re.search(r'\b(UPPER|SECOND|2ND|THIRD|3RD|LOFT|ATTIC)\b', t): return 0
+    if re.search(r'\b(BASEMENT|LOWER|LL|CELLAR|WALK-?OUT|GARDEN LEVEL)\b', t): return 2
+    return 1
+
+
 def on_board(board, plan_results, option_results, title_h=9.0, project='', plan_name='', elevations=()):
     """Main plans centred in the boxes under the elevation names (one per elevation, in order);
     options packed into the OPTIONS box, left to right, top to bottom. Labels filled in."""
     out = Result(); spill = []
     cols = board['columns']
     # plan_results: results, or (result, elevation name) pairs; a named elevation takes its own box
-    pairs = [p if isinstance(p, tuple) else (p, '') for p in plan_results]
+    # plan_results: results, or (result, elevation) / (result, elevation, level) tuples
+    pairs = [(p + ('',))[:3] if isinstance(p, tuple) and len(p) == 2 else p if isinstance(p, tuple) else (p, '', '') for p in plan_results]
     names = [n.strip().upper() for n in elevations]
-    taken, where = set(), []
-    for res, ev in pairs:
+    # a named elevation takes its own box; plans with no elevation are the levels of the main plan and share
+    # the first box that's left. Levels sit side by side: upper, main, then lower.
+    groups = {}
+    rank = {}
+    for res, ev, lv in pairs:
+        rank[id(res)] = LEVELS.index(lv) if lv in LEVELS else level_rank(res)
         k = names.index(ev.strip().upper()) if ev.strip() and ev.strip().upper() in names else None
-        if k is not None and k < len(cols) and k not in taken: taken.add(k)
-        else: k = None
-        where.append(k)
-    for i, k in enumerate(where):
-        if k is None:
-            free = [c for c in range(len(cols)) if c not in taken]
-            if free: where[i] = free[0]; taken.add(free[0])
-    for (res, _), k in zip(pairs, where):
-        texts = sheet_layout(res, title_h); x0, y0, x1, y1 = _extent(res, texts)
-        if k is not None:
-            cx0, cy0, cx1, cy1 = cols[k][0]
-            _place(out, res, texts, (cx0 + cx1) / 2 - (x0 + x1) / 2, (cy0 + cy1) / 2 - (y0 + y1) / 2)
-        else: spill.append(res)
+        groups.setdefault(k if k is not None and k < len(cols) else None, []).append(res)
+    loose = groups.pop(None, [])
+    if loose:
+        free = [c for c in range(len(cols)) if c not in groups]
+        if free: groups[free[0]] = loose
+        else: spill += loose
+    for k, rs in groups.items():
+        rs = sorted(rs, key=lambda r: rank[id(r)])
+        laid = [(r, sheet_layout(r, title_h)) for r in rs]
+        ext = [_extent(r, t) for r, t in laid]
+        width = sum(e[2] - e[0] for e in ext) + LEVEL_GAP * (len(ext) - 1)
+        top = max(e[3] for e in ext); bot = min(top - (e[3] - e[1]) for e in ext)
+        cx0, cy0, cx1, cy1 = cols[k][0]
+        x = (cx0 + cx1) / 2 - width / 2; ty = (cy0 + cy1) / 2 + (top - bot) / 2      # tops lined up, the group centred
+        for (r, t), e in zip(laid, ext):
+            _place(out, r, t, x - e[0], ty - e[3]); x += (e[2] - e[0]) + LEVEL_GAP
     box = board['options']
     if box is None and option_results: spill += option_results
     elif option_results:

@@ -291,7 +291,7 @@ class StartDialog(QDialog):
             row.addStretch(); v.addLayout(row)
         sub = QLabel('Name it, add the builder\'s files, and choose the builder. Everything you clean goes into one drawing, '
                      'and the plan is saved so you can come back to it.'); sub.setProperty('kind', 'muted'); sub.setWordWrap(True); v.addWidget(sub)
-        v.addWidget(_heading('1', 'Plan name (also the drawing\'s file name)'))
+        v.addWidget(_heading('1', 'Plan name'))
         self.plan_name = QLineEdit(); self.plan_name.setPlaceholderText('e.g. C405 Electrical'); self.plan_name.setMinimumHeight(34)
         self.plan_name.textEdited.connect(lambda _: setattr(self, '_named', True)); self.plan_name.textChanged.connect(self.update_state)
         v.addWidget(self.plan_name)

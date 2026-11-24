@@ -19,7 +19,7 @@ from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
 from planclean.result import Result, turned
 from planclean.jobs import CleanJob, attach_to_page
-from planclean.plan import Plan, combine, reattach, find_board, on_board
+from planclean.plan import Plan, combine, reattach, find_board, on_board, LEVELS, level_rank
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
@@ -309,7 +309,11 @@ class MainWindow(QMainWindow):
         self.roles_lbl = QLabel('Line types on this plan'); v.addWidget(self.roles_lbl)
         self.roles = QTableWidget(0, 3); self.roles.setHorizontalHeaderLabels(['Line type', 'Count', 'What it is'])
         self.roles.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch); self.roles.verticalHeader().hide()
-        self.roles.itemSelectionChanged.connect(self.on_role_select); v.addWidget(self.roles, 2)
+        self.roles.itemSelectionChanged.connect(self.on_role_select); self.roles.cellClicked.connect(self._role_clicked)
+        self.roles.setSelectionBehavior(QTableWidget.SelectRows); self.roles.setSelectionMode(QTableWidget.SingleSelection)
+        v.addWidget(self.roles, 2)
+        b = QPushButton('Clear highlight'); b.setToolTip('Stop highlighting the line type (or press Esc, or click the row again)')
+        b.clicked.connect(lambda: self.roles.clearSelection()); v.addWidget(b, 0, Qt.AlignLeft)
         self.sym_lbl = QLabel('Symbol examples'); v.addWidget(self.sym_lbl)
         self.examples = QTableWidget(0, 2); self.examples.setHorizontalHeaderLabels(['Builder symbol', 'Is a…'])
         self.examples.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); self.examples.verticalHeader().hide()
@@ -327,6 +331,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(1)
 
     def close_teach(self):
+        self.roles.clearSelection()
         if self.view.mode == 'teach': self.view.set_mode('review' if self.result else 'box')
         self.tabs.setCurrentIndex(2 if self.result else getattr(self, '_teach_from', 0) or 0)
 
@@ -357,6 +362,12 @@ class MainWindow(QMainWindow):
         self.area_type.activated.connect(self.area_type_changed)
         self.for_lbl = QLabel('for'); row.addWidget(self.for_lbl); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
                      'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 1); v.addLayout(row)
+        row = QHBoxLayout(); self.level_lbl = QLabel('Level'); row.addWidget(self.level_lbl)
+        self.level_cb = QComboBox(); [self.level_cb.addItem(n, n) for n in LEVELS]
+        self.level_cb.setToolTip('Floors of one plan go side by side on the template, left to right: upper, main, lower. '
+                                 'It\'s read from the sheet title (2ND FLOOR, BASEMENT...); change it if it\'s wrong.')
+        row.addWidget(self.level_cb, 1); row.addStretch(2); v.addLayout(row)
+        self.area_type.currentTextChanged.connect(lambda t: (self.level_lbl.setVisible(t == 'Electrical plan'), self.level_cb.setVisible(t == 'Electrical plan')))
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area. When you\'re done, click <b>Export DWG</b> at the top right.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
@@ -479,12 +490,13 @@ class MainWindow(QMainWindow):
                                     sorted({sh.path for sh in self.sheets}))
         if self.editing is not None and self.editing < len(self.plan.items):
             self.plan.replace(self.editing, self.result, self.region); n = self.editing
-            self.plan.items[n].area_type = self.area_type.currentText(); self.plan.items[n].elevation = self.elev_cb.currentData() or ''; self.plan.save()
+            self.plan.items[n].area_type = self.area_type.currentText(); self.plan.items[n].elevation = self.elev_cb.currentData() or ''
+            self.plan.items[n].level = self.level_cb.currentData() or ''; self.plan.save()
             msg = f'Updated area {n + 1} in the plan.'
         else:
             lab = getattr(self.sheet, 'label', self.sheet.title)
             self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab, self.area_type.currentText(),
-                          self.elev_cb.currentData() or '')
+                          self.elev_cb.currentData() or '', self.level_cb.currentData() if not is_elev(self.area_type.currentText()) else '')
             msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Export DWG when you\'re done.'
         self.editing = None; self.fill_items(); self.redraw_box(); self.statusBar().showMessage(msg, 8000)
         QTimer.singleShot(0, self.view.fit)            # back out to the whole page for the next box
@@ -646,7 +658,7 @@ class MainWindow(QMainWindow):
     def on_role_select(self):
         if not self.sheet or self.sheet.kind != 'pdf' or not self.region: return
         rows = {i.row() for i in self.roles.selectedItems()}
-        if not rows: return
+        if not rows: self._clear_role_highlight(); return
         key = self.roles.item(min(rows), 0).data(Qt.UserRole)
         self.view.clear_overlay()
         polys = []
@@ -656,6 +668,17 @@ class MainWindow(QMainWindow):
                 for q in polylines(p): polys.append([self.sheet.to_view(*v) for v in q])
         self.view.add_paths(polys, '#ff2d55', 2); self.view.page_item.setOpacity(0.35)
 
+    def _clear_role_highlight(self):
+        self.view.clear_overlay()
+        if self.result and self.tabs.currentIndex() != 1: self.draw_result()
+        elif self.view.page_item: self.view.page_item.setOpacity(1.0)
+
+    def _role_clicked(self, row, _col):
+        # clicking the highlighted line type again turns the highlight off
+        if getattr(self, '_role_last', None) == row and self.roles.selectionModel().isRowSelected(row):
+            self.roles.clearSelection(); self._role_last = None
+        else: self._role_last = row
+
     def start_teach(self):
         if not self.profile: QMessageBox.information(self, 'Builder', 'Choose or create a builder first.'); return
         if not self.region: QMessageBox.information(self, 'Plan area', 'Draw a box around the plan first.'); return
@@ -663,7 +686,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage('Click the centre of a builder symbol. Press Esc when done.')
 
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Escape: self.view.set_mode('review' if self.result else 'pan'); self.statusBar().clearMessage()
+        if e.key() == Qt.Key_Escape:
+            if self.roles.selectedItems(): self.roles.clearSelection(); return
+            self.view.set_mode('review' if self.result else 'pan'); self.statusBar().clearMessage()
         else: super().keyPressEvent(e)
 
     def on_teach_click(self, p: QPointF):
@@ -754,6 +779,9 @@ class MainWindow(QMainWindow):
         if self.editing is not None and self.plan: ev = self.plan.items[self.editing].elevation
         else: ev = self.guess_elevation(res)
         i = self.elev_cb.findData(ev); self.elev_cb.setCurrentIndex(max(i, 0))
+        lv = self.plan.items[self.editing].level if (self.editing is not None and self.plan) else ''
+        self.level_cb.setCurrentIndex(LEVELS.index(lv) if lv in LEVELS else level_rank(res))
+        show = self.area_type.currentText() == 'Electrical plan'; self.level_lbl.setVisible(show); self.level_cb.setVisible(show)
 
     def area_type_changed(self, _=None):
         """Switching between a plan and an elevation cleans the box again the other way."""
@@ -1086,7 +1114,7 @@ class MainWindow(QMainWindow):
         if base is not None:
             board = find_board(base)
             if board:
-                plans = [(r, it.elevation) for r, it in zip(results, items) if it.area_type != 'Option']
+                plans = [(r, it.elevation, it.level) for r, it in zip(results, items) if it.area_type != 'Option']
                 opts = [r for r, it in zip(results, items) if it.area_type == 'Option']
                 res, spill = on_board(board, plans, opts, self.settings.text_height_title, self.plan.project, self.plan.name, self.plan.elevations)
                 if spill:      # more plans than boxes: they go above the board

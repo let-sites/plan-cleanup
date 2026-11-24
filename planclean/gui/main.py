@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
         t = QLabel('Teach this builder\'s symbols'); t.setStyleSheet('font-size:18px;font-weight:700;margin:2px 0 4px 0'); v.addWidget(t)
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
         self.scale_cb.currentIndexChanged.connect(self.on_scale); row.addWidget(self.scale_cb); v.addLayout(row)
-        self.teach_tabs = QTabWidget(); self.teach_tabs.setDocumentMode(True)
+        self.teach_tabs = QTabWidget(); self.teach_tabs.setObjectName('pilltabs'); self.teach_tabs.setDocumentMode(True)
         sym_w = QWidget(); sv = QVBoxLayout(sym_w); sv.setContentsMargins(0, 8, 0, 0)
         role_w = QWidget(); rv = QVBoxLayout(role_w); rv.setContentsMargins(0, 8, 0, 0)
         self.roles_lbl = QLabel('Line types on this plan'); rv.addWidget(self.roles_lbl)
@@ -1149,6 +1149,8 @@ class MainWindow(QMainWindow):
         d = QDialog(self); d.setWindowTitle('Note'); v = QVBoxLayout(d)
         v.addWidget(QLabel('Text (use / for a new line):'))
         ed = QLineEdit(' / '.join(obj.lines)); ed.setMinimumWidth(420); v.addWidget(ed)
+        always = QCheckBox(f'When deleting: also leave this wording off future {self.profile.name if self.profile else "builder"} plans')
+        always.setVisible(obj.kind == 'note' and len(obj.lines) == 1); v.addWidget(always)
         bb = QDialogButtonBox(); save = bb.addButton('Save', QDialogButtonBox.AcceptRole)
         dele = bb.addButton('Delete note', QDialogButtonBox.DestructiveRole); bb.addButton('Cancel', QDialogButtonBox.RejectRole)
         choice = {}
@@ -1159,6 +1161,7 @@ class MainWindow(QMainWindow):
         self._snap()
         if choice.get('a') == 'delete' or not ed.text().strip(('/ ')):
             if obj in self.result.texts: self.result.texts.remove(obj)
+            if always.isChecked() and obj.kind == 'note': self._learn_drop(obj)
             self._sel = None
         else:
             obj.lines = [l.strip() for l in ed.text().split('/') if l.strip()]; obj.review = ''
@@ -1195,8 +1198,7 @@ class MainWindow(QMainWindow):
         self._snap()
         if hasattr(s, 'cls'): self.result.symbols.remove(s)
         elif s in self.result.texts:
-            self.result.texts.remove(s)
-            if s.kind == 'note': self._learn_drop(s)
+            self.result.texts.remove(s)          # just from this plan (the note's own window can leave it off for good)
         self._sel = None; self._after_review_change()
 
     def _to_drawing(self, x, y):

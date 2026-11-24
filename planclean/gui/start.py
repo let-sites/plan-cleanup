@@ -82,6 +82,7 @@ class DropOverlay(QLabel):
     def show_over(self):
         self.setGeometry(self.parentWidget().rect().adjusted(8, 8, -8, -8)); self.raise_(); self.show()
 
+SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
 OUTLET_CHOICES = [('all', 'All outlets'), ('outside', 'Only exterior and garage outlets'), ('none', 'No outlets')]
 
 class BuilderOptions(QWidget):
@@ -89,6 +90,12 @@ class BuilderOptions(QWidget):
     def __init__(self, profile, parent=None, changed=None):
         super().__init__(parent); self.profile = profile; self.changed = changed
         v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout(); row.addWidget(QLabel('<b>Drawing scale</b>'))
+        self.scale = QComboBox()
+        for n, k in SCALES: self.scale.addItem(n, k)
+        cur = round(profile.inches_per_pt * 72); i = self.scale.findData(cur)
+        if i < 0: self.scale.addItem(f'{cur}:1', cur); i = self.scale.count() - 1
+        self.scale.setCurrentIndex(i); row.addWidget(self.scale); row.addStretch(); v.addLayout(row)
         v.addWidget(QLabel('<b>Outlets</b>'))
         self.out_group = QButtonGroup(self)
         for i, (key, text) in enumerate(OUTLET_CHOICES):
@@ -112,6 +119,7 @@ class BuilderOptions(QWidget):
             rm.clicked.connect(self._show_again)
             v.addWidget(rm, 0, Qt.AlignLeft)
         if changed:
+            self.scale.currentIndexChanged.connect(lambda _: self.apply())
             self.out_group.idClicked.connect(lambda _: self.apply()); self.det.toggled.connect(lambda _: self.apply()); self.fan.toggled.connect(lambda _: self.apply())
 
     def _show_again(self):
@@ -119,6 +127,7 @@ class BuilderOptions(QWidget):
         if self.changed: self.apply()
 
     def apply(self):
+        self.profile.inches_per_pt = self.scale.currentData() / 72
         self.profile.outlets = OUTLET_CHOICES[max(self.out_group.checkedId(), 0)][0]
         self.profile.detectors = self.det.isChecked(); self.profile.exhaust_fans = self.fan.isChecked()
         if self.drop_list is not None:

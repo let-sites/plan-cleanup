@@ -174,11 +174,13 @@ class SheetView(QGraphicsView):
             t.setZValue(10); t.setData(0, payload); self.overlay.append(t)
         return it
 
-    def add_paths(self, polys, color='#333333', width=0):
+    def add_paths(self, polys, color='#333333', width=0, fill=False):
         path = QPainterPath()
         for pts in polys:
             if len(pts) < 2: continue
             path.moveTo(*pts[0])
             for p in pts[1:]: path.lineTo(*p)
-        it = self.scene_.addPath(path, QPen(QColor(color), width)); it.setZValue(6); self.overlay.append(it)
+            if fill: path.closeSubpath()
+        it = self.scene_.addPath(path, QPen(QColor(color), width), QBrush(QColor(color)) if fill else QBrush(Qt.NoBrush))
+        it.setZValue(6); self.overlay.append(it)
         return it

@@ -224,12 +224,32 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     for i, p in enumerate(pl):
         if i in gone: continue
         role = 'wall' if pen_key(p) == opk else 'misc'
+        polys = _fill_outline(p) if is_filled(p) and pen_key(p) != 'fill #ffffff' else None
+        if polys:             # a solid shape (the bold ground line): keep it filled
+            for poly in polys: res.lines.append((role, [tx(*v) for v in poly], True))
+            continue
         for q in polylines(p):
-            res.lines.append((role, [tx(*v) for v in q], is_filled(p) and len(q) > 2))
+            res.lines.append((role, [tx(*v) for v in q], is_filled(p) and pen_key(p) != 'fill #ffffff' and len(q) > 2))
     res.original = [[tx(*v) for v in q] for i in gone for q in polylines(pl[i])]
 
     res.stats = dict(removed=len(gone), words=len(words), kind='elevation')
     return res
+
+
+def _fill_outline(p):
+    """A filled path drawn as straight pieces, as closed outlines (a solid is often drawn as two triangles). None if it isn't one."""
+    items = p.get('items') or []
+    if len(items) < 2 or any(it[0] != 'l' for it in items): return None
+    polys, cur = [], None
+    for it in items:
+        a, b = (it[1].x, it[1].y), (it[2].x, it[2].y)
+        if cur and abs(a[0] - cur[-1][0]) < 0.01 and abs(a[1] - cur[-1][1]) < 0.01: cur.append(b)
+        else:
+            if cur: polys.append(cur)
+            cur = [a, b]
+    polys.append(cur)
+    polys = [q for q in polys if len(q) > 3]
+    return polys or None
 
 
 def _untx(v, K, x0, y0):

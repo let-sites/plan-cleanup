@@ -788,8 +788,11 @@ class MainWindow(QMainWindow):
         shapes = self.block_shapes()
         # wires end where your block's POINT says (e.g. the centre of a wall light's circle)
         wire_lines, wire_arcs = dxfout.retarget_wires(self.result, lambda s: shapes.block(self.settings.block_for(s.cls)))
+        solids = []
         for role, pts, f in wire_lines:
             polys.setdefault(role, []).append([self._view_pt(*p) for p in pts])
+            if f and len(pts) > 2: solids.append([self._view_pt(*p) for p in pts])
+        if solids: self.view.add_paths(solids, '#111', 0, fill=True)
         from planclean.wiring import arc_points
         if self.show_removed.isChecked() and getattr(self.result, 'original', None):
             it = self.view.add_paths([[self._view_pt(*p) for p in pts] for pts in self.result.original], '#f08c8c', 0)

@@ -17,7 +17,7 @@ from planclean.engine import clean_pdf, pens_in, guess_roles
 from planclean.teach import Teacher
 from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
-from planclean.result import Result, turned
+from planclean.result import Result, Text, turned
 from planclean.jobs import CleanJob, attach_to_page
 from planclean.plan import Plan, combine, reattach, find_board, on_board, LEVELS, level_rank
 from planclean.preview import BlockShapes
@@ -189,9 +189,8 @@ class MainWindow(QMainWindow):
         self.save_btn = _big('Export DWG', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
         self.save_btn.setToolTip('The last step: plans and options go on your master template, elevations in their own drawing')
         tb.addWidget(self.save_btn)
-        b = QToolButton(); b.setText('\u2699\ufe0e'); b.setToolTip('Settings  (⌘,)'); b.setFixedSize(34, 34)
-        b.setStyleSheet('QToolButton{border:1px solid #c9d3db;border-radius:17px;background:white;color:#4b5a66;font-size:19px;margin-left:6px}'
-                        'QToolButton:hover{background:#edf3f7}')
+        b = _big('\u2699\ufe0e'); b.setToolTip('Settings  (⌘,)'); b.setMinimumWidth(52)
+        f = b.font(); f.setPointSize(f.pointSize() + 4); b.setFont(f)
         b.clicked.connect(self.open_settings); tb.addWidget(b)
 
     def _menus(self):
@@ -408,6 +407,12 @@ class MainWindow(QMainWindow):
                                  'It\'s read from the sheet title (2ND FLOOR, BASEMENT...); change it if it\'s wrong.')
         row.addWidget(self.level_cb, 1); row.addStretch(2); v.addLayout(row)
         self.area_type.currentTextChanged.connect(lambda t: (self.level_lbl.setVisible(t == 'Electrical plan'), self.level_cb.setVisible(t == 'Electrical plan')))
+        row = QHBoxLayout()
+        self.note_btn = QPushButton('Add a note'); self.note_btn.setToolTip('Click on the plan where it goes, then type it (a ceiling height, say)')
+        self.note_btn.clicked.connect(self.start_place_note); row.addWidget(self.note_btn)
+        self.heights_btn = QPushButton('Ceiling heights from another sheet…')
+        self.heights_btn.setToolTip('Copy the ceiling heights from the floor plan sheet, lined up by the room names')
+        self.heights_btn.clicked.connect(self.heights_from_sheet); row.addWidget(self.heights_btn); v.addLayout(row)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area. When you\'re done, click <b>Export DWG</b> at the top right.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
@@ -743,6 +748,7 @@ class MainWindow(QMainWindow):
         else: super().keyPressEvent(e)
 
     def on_teach_click(self, p: QPointF):
+        if self.view.mode == 'place': self.place_note(p); return
         if self.teacher is None:
             self.teacher = Teacher(self.sheet.page, self.region, self.profile)
         x, y = self.sheet.from_view(p.x(), p.y())
@@ -924,6 +930,7 @@ class MainWindow(QMainWindow):
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
         self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
         self.save_btn.setEnabled(True)
+        self._update_heights_btn()
         QTimer.singleShot(300, lambda r=res: self.check_scale(r))
         QTimer.singleShot(0, self.view.fit)            # zoom to the box you drew
         self.add_btn.setText('Update in plan' if self.editing is not None else 'Add to plan')
@@ -1143,7 +1150,7 @@ class MainWindow(QMainWindow):
             changed = (len(prof[0]) != len(self.profile.symbols) or prof[1] != self.profile.drop_labels)
             self.profile.symbols, self.profile.drop_labels = list(prof[0]), list(prof[1])
             if changed: self._save_quietly(); self.fill_setup()
-        self._sel = None; self.draw_result(); self.fill_review(); self.statusBar().showMessage('Undone.', 3000)
+        self._sel = None; self.draw_result(); self.fill_review(); self._update_heights_btn(); self.statusBar().showMessage('Undone.', 3000)
 
     def change_type(self, i):
         s = getattr(self, '_sel', None)
@@ -1160,6 +1167,83 @@ class MainWindow(QMainWindow):
             self.result.texts.remove(s)
             if s.kind == 'note': self._learn_drop(s)
         self._sel = None; self._after_review_change()
+
+    def _to_drawing(self, x, y):
+        """Page point -> drawing units of the cleaned plan (the inverse of result.to_page)."""
+        f = self.result.to_page; o = f(0, 0); a = f(1, 0); b = f(0, 1)
+        m = ((a[0] - o[0], b[0] - o[0]), (a[1] - o[1], b[1] - o[1])); det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
+        u, v = x - o[0], y - o[1]
+        return ((m[1][1] * u - m[0][1] * v) / det, (-m[1][0] * u + m[0][0] * v) / det)
+
+    def start_place_note(self):
+        if not self.result: return
+        self.view.set_mode('place'); self.statusBar().showMessage('Click on the plan where the note goes. Esc to cancel.')
+
+    def place_note(self, p):
+        self.view.set_mode('review')
+        text, ok = QInputDialog.getText(self, 'Add a note', 'Note (use / for a new line):', text=getattr(self, '_last_note', ''))
+        if not ok or not text.strip(' /'): self.statusBar().clearMessage(); return
+        self._last_note = text
+        self._snap()
+        X, Y = self._to_drawing(*self.sheet.from_view(p.x(), p.y()))
+        self.result.texts.append(Text('note', [l.strip() for l in text.split('/') if l.strip()], X, Y))
+        self.draw_result(); self.statusBar().showMessage('Note added. ⌘Z to undo.', 4000)
+
+    def heights_from_sheet(self):
+        if not self.result or self.result.stats.get('kind') == 'elevation': return
+        others = [sh for sh in self.sheets if sh is not self.sheet and sh.kind == 'pdf']
+        if not others: QMessageBox.information(self, 'Ceiling heights', 'Add the floor plan to this plan first (File ▸ Add files to this plan…).'); return
+        labels = [sh.label for sh in others]
+        last = getattr(self, '_heights_sheet', None)
+        choice, ok = QInputDialog.getItem(self, 'Ceiling heights', 'Which sheet shows the ceiling heights for this floor?', labels,
+                                          labels.index(last) if last in labels else 0, False)
+        if not ok: return
+        self._heights_sheet = choice; sh = others[labels.index(choice)]
+        from planclean import heights
+        run_in_thread(self, lambda prog: heights.read_sheet(sh.page, prog), lambda words, sh=sh: self._place_heights(words, sh), 'Reading the ceiling heights…')
+
+    def _place_heights(self, words, sh):
+        from planclean import heights
+        from planclean.vec import pen_key, in_region
+        res = self.result
+        rooms = [(t.lines[0], *res.to_page(t.x, t.y)) for t in res.texts if t.kind == 'room' and t.lines]
+        if not rooms:
+            QMessageBox.information(self, 'Ceiling heights', 'This plan has no room names to line the sheets up by. Use Add a note to type them in.'); return
+        names = self.profile.room_names if self.profile else {}
+        est = heights.estimate(words, rooms, names)
+        if est is None:
+            QMessageBox.information(self, 'Ceiling heights', f'Couldn\'t line up {sh.label} with this plan: not enough of the same room names on both. '
+                                    'Check it\'s the same floor, or use Add a note to type them in.'); return
+        walls = {k for k, v in (self.profile.pen_roles if self.profile else {}).items() if v == 'wall'}
+        mine = [p for p in self.sheet.page.get_drawings() if pen_key(p) in walls and in_region(p, self.region)]
+        off = heights.refine(mine, self.region, sh.page.get_drawings(), est, walls)
+        x0, y0, x1, y1 = self.region
+        found = [f for f in heights.transfer(words, rooms, names, off) if x0 <= f[1] <= x1 and y0 <= f[2] <= y1]
+        if not found:
+            QMessageBox.information(self, 'Ceiling heights', f'No ceiling heights on {sh.label} for this part of the plan.'); return
+        self._snap()
+        room_text = {}
+        for t in res.texts:
+            if t.kind == 'room' and t.lines: room_text[(t.lines[0], *res.to_page(t.x, t.y))] = t
+        gap = (self.settings.text_height_room + self.settings.text_height_note) * 0.75 + 1.0
+        n = 0; under = {}
+        for text, x, y, room in found:
+            rt = room_text.get(room) if room else None
+            if rt is not None:
+                k = under.get(id(rt), 0); under[id(rt)] = k + 1
+                X, Y = rt.x, rt.y - gap - k * self.settings.text_height_note * 1.4; review = ''
+            else:
+                X, Y = self._to_drawing(x, y); review = 'Ceiling height: check where it landed'
+            if any(t.kind == 'note' and ' '.join(t.lines) == text and math.hypot(t.x - X, t.y - Y) < 24 for t in res.texts): continue
+            res.texts.append(Text('note', [text], X, Y, review=review)); n += 1
+        self.draw_result(); self.fill_review(); self._update_heights_btn()
+        self.statusBar().showMessage(f'Added {n} ceiling height{"s" if n != 1 else ""} from {sh.label}. ⌘Z to undo.', 8000)
+
+    def _update_heights_btn(self):
+        """The builder's own sheet already has ceiling heights: nothing to copy."""
+        from planclean.heights import is_height
+        has = bool(self.result) and any(t.kind == 'note' and is_height(' '.join(t.lines).upper()) for t in self.result.texts)
+        self.heights_btn.setVisible(bool(self.result) and self.result.stats.get('kind') != 'elevation' and not has)
 
     def rotate_sel(self, step=1):
         """Turn the selected symbol a quarter turn (step 1 clockwise, -1 the other way)."""

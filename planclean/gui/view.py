@@ -46,7 +46,7 @@ class SheetView(QGraphicsView):
         self.mode = mode
         # on the cleaned plan, dragging empty space moves the page; clicking a symbol selects it
         self.setDragMode(QGraphicsView.ScrollHandDrag if mode in ('pan', 'review') else QGraphicsView.NoDrag)
-        self.viewport().setCursor(Qt.CrossCursor if mode in ('box', 'teach') else Qt.OpenHandCursor)
+        self.viewport().setCursor(Qt.CrossCursor if mode in ('box', 'teach', 'place') else Qt.OpenHandCursor)
 
     def _zoom_buttons(self):
         from PySide6.QtWidgets import QWidget, QHBoxLayout, QToolButton
@@ -138,6 +138,8 @@ class SheetView(QGraphicsView):
             m = self._ex_at(e.position().toPoint())
             if m is not None:                                    # grab a taught symbol
                 self._drag = (m, p, m.pos(), False); self.viewport().setCursor(Qt.ClosedHandCursor); return
+            self.clicked.emit(p); return
+        if self.mode == 'place' and e.button() == Qt.LeftButton:
             self.clicked.emit(p); return
         if self.mode == 'review' and e.button() == Qt.LeftButton:
             it = self.itemAt(e.position().toPoint())

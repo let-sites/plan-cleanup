@@ -19,10 +19,11 @@ from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
 from planclean.result import Result
 from planclean.jobs import CleanJob, attach_to_page
+from planclean.plan import Plan, combine, reattach
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 from .sources import PdfSheet, DwgSheet
-from .start import StartDialog, _big, DropOverlay, _plan_url, BuilderSettingsDialog
+from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog
 THUMB_W = 200
 
 SCALES = [('1/4" = 1\'-0"', 48), ('1/8" = 1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('3/8" = 1\'-0"', 32), ('1/2" = 1\'-0"', 24)]
@@ -106,22 +107,26 @@ class MainWindow(QMainWindow):
         self.addAction(a)
         self.setAcceptDrops(True); self._overlay = DropOverlay(self)
         self.resize(1500, 950)
-        self.file_name = ''
-        self.statusBar().showMessage('Click New cleanup to start.')
+        self.file_name = ''; self.plan: Plan | None = None; self.editing = None   # editing: index of the plan area being redone
+        self.statusBar().showMessage('Click New plan to start.')
 
     # ---------- layout
     def _toolbar(self):
         tb = QToolBar('Main'); tb.setMovable(False); self.addToolBar(tb)
-        b = _big('New cleanup…', primary=True); b.clicked.connect(self.new_cleanup); tb.addWidget(b)
+        b = _big('New plan…', primary=True); b.clicked.connect(self.new_cleanup); tb.addWidget(b)
+        b = _big('Open plan…'); b.clicked.connect(self.open_plan_dialog); tb.addWidget(b)
         QAction_ = QAction('New', self); QAction_.setShortcut(QKeySequence.New); QAction_.triggered.connect(self.new_cleanup); self.addAction(QAction_)
         self.info = QLabel(''); self.info.setStyleSheet('font-size:14px;padding-left:12px'); tb.addWidget(self.info)
         spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); tb.addWidget(spacer)
+        self.save_btn = _big('Save drawing (DWG)…', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
+        tb.addWidget(self.save_btn)
         b = _big('Settings'); b.clicked.connect(self.open_settings); tb.addWidget(b)
 
     def update_info(self):
         parts = []
         if self.profile: parts.append(f'<b>Builder:</b> {self.profile.name}')
-        if self.sheet: parts.append(f'<b>Plan:</b> {self.file_name} · {self.sheet.title}')
+        if self.plan: parts.append(f'<b>Plan:</b> {self.plan.name}')
+        if self.sheet: parts.append(f'<b>Sheet:</b> {getattr(self.sheet, "label", self.sheet.title)}')
         self.info.setText('&nbsp;&nbsp;&nbsp;'.join(parts))
 
     def _docks(self):
@@ -130,7 +135,17 @@ class MainWindow(QMainWindow):
         side = QWidget(); sv = QVBoxLayout(side); sv.setContentsMargins(10, 10, 6, 10)
         hdr = QLabel('<b>Sheets</b>'); hdr.setStyleSheet('font-size:15px'); sv.addWidget(hdr)
         tip = QLabel('Use ↑ ↓ to flip through'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
-        sv.addWidget(self.pages, 1)
+        sv.addWidget(self.pages, 3)
+        hdr = QLabel('<b>In this plan</b>'); hdr.setStyleSheet('font-size:15px;margin-top:8px'); sv.addWidget(hdr)
+        tip = QLabel('Double-click an area to redo it'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
+        self.items = QListWidget(); self.items.setObjectName('planitems'); self.items.itemDoubleClicked.connect(lambda it: self.open_item(self.items.row(it)))
+        sv.addWidget(self.items, 2)
+        row = QHBoxLayout(); row.setSpacing(4)
+        for txt, fn, tipx in [('↑', lambda: self.move_item(-1), 'Move up (earlier in the drawing)'), ('↓', lambda: self.move_item(1), 'Move down'),
+                              ('Remove', self.remove_item, 'Take this area out of the plan')]:
+            b = QPushButton(txt); b.setToolTip(tipx); b.clicked.connect(fn); row.addWidget(b)
+        sv.addLayout(row)
+        b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); sv.addWidget(b)
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.addDockWidget(Qt.LeftDockWidgetArea, d); self.sheet_dock = d
         self._thumb_queue = []; self._thumb_timer = QTimer(self); self._thumb_timer.timeout.connect(self._next_thumb)
@@ -214,7 +229,9 @@ class MainWindow(QMainWindow):
         self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1)
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
-        b = _big('Save cleaned plan (DWG)…', primary=True); b.clicked.connect(self.save_result); v.addWidget(b)
+        self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
+        self.add_hint = QLabel('Then box the next area, or click <b>Save drawing</b> at the top.'); self.add_hint.setProperty('kind', 'muted')
+        self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
         row = QHBoxLayout()
         b = QPushButton('Redraw the box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
         b = QPushButton('Teach more symbols'); b.clicked.connect(lambda: self.tabs.setCurrentIndex(1)); row.addWidget(b)
@@ -254,11 +271,96 @@ class MainWindow(QMainWindow):
         if self.profile: self.profile.inches_per_pt = SCALES[i][1] / 72
 
     # ---------- files
-    def new_cleanup(self):
+    def new_cleanup(self, files=()):
         d = StartDialog(self.settings, self, open_settings=lambda parent: self.open_settings(parent))
+        for f in files: d.set_file(f)
+        if self.profile and d.builder.findText(self.profile.name) > 0: d.builder.setCurrentIndex(d.builder.findText(self.profile.name))
         if d.exec() != QDialog.Accepted: return
+        if d.open_folder: self.open_plan(d.open_folder); return
+        self.plan = Plan.create(d.plan_name.text().strip(), d.builder_name(), d.paths)
         self.set_builder(d.builder_name())
-        self.load(d.path, d.sheet_index)
+        self.load(d.paths, d.sheet_index); self.fill_items()
+
+    def open_plan_dialog(self):
+        d = OpenPlanDialog(self)
+        if d.exec() == QDialog.Accepted and d.folder: self.open_plan(d.folder)
+
+    def open_plan(self, folder):
+        try: plan = Plan.load(folder)
+        except Exception as e: QMessageBox.warning(self, 'Open plan', f'Could not open that plan:\n{e}'); return
+        missing = [f for f in plan.files if not Path(f).exists()]
+        if missing:
+            QMessageBox.warning(self, 'Files moved', 'These files aren\'t where they were, so their sheets aren\'t shown. '
+                                'The areas you already cleaned are still in the plan.\n\n' + '\n'.join(missing) +
+                                '\n\nUse Add files… to add them again from their new place.')
+        self.plan = plan
+        if plan.builder and plan.builder in self.settings.list_profiles(): self.set_builder(plan.builder)
+        self.load([f for f in plan.files if Path(f).exists()]); self.fill_items()
+
+    def add_files(self):
+        if not self.plan: self.new_cleanup(); return
+        fs, _ = QFileDialog.getOpenFileNames(self, 'Add the builder\'s files', '', 'Plans (*.pdf *.dwg)')
+        self._add_files(fs)
+
+    def _add_files(self, fs):
+        fs = [f for f in fs if f not in self.plan.files]
+        if not fs: return
+        self.plan.add_files(fs); keep = self.pages.currentRow()
+        self.load([f for f in self.plan.files if Path(f).exists()], max(keep, 0))
+
+    # ---------- the plan's areas
+    def fill_items(self):
+        self.items.clear()
+        if not self.plan: self.save_btn.setEnabled(self.result is not None); return
+        for i, it in enumerate(self.plan.items):
+            w = QListWidgetItem(f'{i + 1}. {it.label}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
+        self.save_btn.setEnabled(True)
+        self.setWindowTitle(f'Plan Cleanup {__version__} — {self.plan.name}'); self.update_info()
+
+    def _sheet_index(self, file, page):
+        for i, sh in enumerate(self.sheets):
+            if getattr(sh, 'path', None) == file and (sh.kind != 'pdf' or sh.index == page): return i
+        return -1
+
+    def add_to_plan(self):
+        if not (self.result and self.sheet): return
+        if not self.plan:
+            self.plan = Plan.create(Path(self.file_name).stem or 'Plan', self.profile.name if self.profile else '',
+                                    sorted({sh.path for sh in self.sheets}))
+        if self.editing is not None and self.editing < len(self.plan.items):
+            self.plan.replace(self.editing, self.result, self.region); n = self.editing
+            msg = f'Updated area {n + 1} in the plan.'
+        else:
+            lab = getattr(self.sheet, 'label', self.sheet.title)
+            self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab)
+            msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Save drawing.'
+        self.editing = None; self.fill_items(); self.redraw_box(); self.statusBar().showMessage(msg, 8000)
+
+    def open_item(self, i):
+        it = self.plan.items[i]; si = self._sheet_index(it.file, it.page)
+        if it.kind == 'pdf' and not self.profile: QMessageBox.information(self, 'Redo area', 'Choose the builder first (New plan).'); return
+        if si < 0:
+            QMessageBox.information(self, 'Redo area', f'The file this area came from isn\'t in the plan any more:\n{it.file}\n\nUse Add files… to add it again.'); return
+        self.pages.setCurrentRow(si); self.on_page(si)
+        self.region = tuple(it.region); self.editing = i
+        res = reattach(self.plan.result(it), it.kind, self.profile, it.region)
+        self.on_cleaned(res)
+        self.statusBar().showMessage(f'Redoing area {i + 1}. Fix it up, then click Update in plan. Redraw the box to clean it again.')
+
+    def remove_item(self):
+        i = self.items.currentRow()
+        if not self.plan or i < 0: return
+        if QMessageBox.question(self, 'Remove area', f'Take "{self.plan.items[i].label}" out of the plan?') != QMessageBox.Yes: return
+        self.plan.remove(i)
+        if self.editing is not None: self.editing = None if self.editing == i else self.editing - (self.editing > i)
+        self.fill_items()
+
+    def move_item(self, d):
+        i = self.items.currentRow()
+        if not self.plan or i < 0 or not 0 <= i + d < len(self.plan.items): return
+        self.plan.move(i, i + d)
+        if self.editing in (i, i + d): self.editing = i + d if self.editing == i else i
+        self.fill_items(); self.items.setCurrentRow(i + d)
 
     def _next_thumb(self):
         if not self._thumb_queue: self._thumb_timer.stop(); return
@@ -270,32 +372,41 @@ class MainWindow(QMainWindow):
         it = self.pages.item(i)
         if it: it.setIcon(QIcon(QPixmap.fromImage(img)))
 
-    def load(self, f, index=0):
-        self.result = None; self.region = None; self.sheets = []; self.sheet = None
+    def load(self, files, index=0):
+        """Show every sheet of the plan's files in the sheet list (several files: grouped by file)."""
+        if isinstance(files, (str, Path)): files = [str(files)]
+        self.result = None; self.region = None; self.sheets = []; self.sheet = None; self.editing = None
         self.pages.blockSignals(True); self.pages.clear(); self._thumb_queue = []
-        ext = Path(f).suffix.lower()
-        try:
-            with open(f, 'rb') as fh: is_pdf = fh.read(5) == b'%PDF-'
-        except OSError: is_pdf = ext == '.pdf'
-        if is_pdf:
-            doc = pymupdf.open(f)
-            for i in range(len(doc)): self.sheets.append(PdfSheet(doc, i))
-        else:
-            exe = oda.find_converter(self.settings.oda_path)
-            try: dxf = oda.to_dxf(f, exe)
-            except Exception as e: QMessageBox.warning(self, 'Can\'t open DWG', str(e)); return
-            self.dwg_doc = dwgin.open_drawing(dxf)
-            self.sheets.append(DwgSheet(self.dwg_doc, Path(f).name))
-        self.file_name = Path(f).name
-        self.setWindowTitle(f'Plan Cleanup {__version__} — {Path(f).name}')
+        many = len(files) > 1
+        for f in files:
+            ext = Path(f).suffix.lower()
+            try:
+                with open(f, 'rb') as fh: is_pdf = fh.read(5) == b'%PDF-'
+            except OSError: is_pdf = ext == '.pdf'
+            if is_pdf:
+                try: doc = pymupdf.open(f)
+                except Exception as e: QMessageBox.warning(self, 'Can\'t open PDF', f'{Path(f).name}\n{e}'); continue
+                for i in range(len(doc)):
+                    sh = PdfSheet(doc, i); sh.path = f
+                    sh.label = f'{Path(f).stem} · Page {i + 1}' if many and len(doc) > 1 else (Path(f).stem if many else f'Page {i + 1}')
+                    self.sheets.append(sh)
+            else:
+                exe = oda.find_converter(self.settings.oda_path)
+                try: dxf = oda.to_dxf(f, exe)
+                except Exception as e: QMessageBox.warning(self, 'Can\'t open DWG', f'{Path(f).name}\n{e}'); continue
+                self.dwg_doc = dwgin.open_drawing(dxf)
+                sh = DwgSheet(self.dwg_doc, Path(f).name); sh.path = f; sh.label = Path(f).stem; self.sheets.append(sh)
+        self.file_name = Path(files[0]).name if files else ''
+        self.setWindowTitle(f'Plan Cleanup {__version__} — {self.plan.name if self.plan else self.file_name}')
         for sh in self.sheets:
-            it = QListWidgetItem(sh.title); it.setSizeHint(QSize(160, 34)); self.pages.addItem(it)
+            it = QListWidgetItem(sh.label); it.setSizeHint(QSize(160, 34)); self.pages.addItem(it)
         self.pages.blockSignals(False)
-        self.pages.setCurrentRow(min(index, len(self.sheets) - 1)); self.pages.setFocus()
+        if self.sheets: self.pages.setCurrentRow(min(index, len(self.sheets) - 1)); self.pages.setFocus()
+        else: self.view.clear_overlay(); self.update_info()
 
     def on_page(self, i):
         if i < 0 or i >= len(self.sheets): return
-        self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None
+        self.sheet = self.sheets[i]; self.region = None; self.result = None; self.teacher = None; self.editing = None
         self._hide_orig_btn(); self.view.set_sheet(self.sheet.pixmap()); self.view.set_mode('box')
         self.area_lbl.setText(''); self.clean_btn.setEnabled(False); self.tabs.setCurrentIndex(0); self.fill_setup(); self.update_info()
         self.statusBar().showMessage('Find the electrical sheet (↑ ↓), then drag a box around the floor plan.')
@@ -330,7 +441,7 @@ class MainWindow(QMainWindow):
             for ex in self.profile.symbols: self._example_row(ex)
             self.teach_btn.setEnabled(True)
         else:
-            layers, blocks = dwgin.inventory(self.dwg_doc)
+            layers, blocks = dwgin.inventory(self.sheet.doc)
             self.roles_lbl.setText('Layers in this drawing')
             for k, n in layers.most_common(): self._role_row(k, n, self.profile.dwg_layer_roles, PEN_ROLES, default='misc')
             self.sym_lbl.setText('Builder blocks: choose what each one is (leave blank to keep as lines)')
@@ -423,7 +534,7 @@ class MainWindow(QMainWindow):
             if not prof.symbols: QMessageBox.information(self, 'Builder setup', 'Teach at least one symbol in step 2 first.'); return
             self.run_pdf_job(self.sheet.doc.name, self.sheet.index, self.region, prof); return
         else:
-            doc, region = self.dwg_doc, self.region
+            doc, region = self.sheet.doc, self.region
             fn = lambda prog: dwgin.clean_dwg(doc, region, prof, progress=prog)
         run_in_thread(self, fn, self.on_cleaned, 'Cleaning the plan…')
 
@@ -458,6 +569,8 @@ class MainWindow(QMainWindow):
         self.summary.setText(f'<b>{len(res.symbols)} symbols:</b> {parts}.<br><b>{sum(1 for t in res.texts if t.kind == "room")} room names</b>, '
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
         self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
+        self.add_btn.setText('Update in plan' if self.editing is not None else 'Add to plan')
+        self.save_btn.setEnabled(True)
         if self.view.region_item is not None: self.view.fitInView(self.view.region_item, Qt.KeepAspectRatio)
 
     def _hide_orig_btn(self):
@@ -659,13 +772,10 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, e):
         self._overlay.hide()
-        f = _plan_url(e.mimeData())
-        if not f: return
-        d = StartDialog(self.settings, self, open_settings=lambda parent: self.open_settings(parent))
-        d.set_file(f)
-        if self.profile and d.builder.findText(self.profile.name) > 0: d.builder.setCurrentIndex(d.builder.findText(self.profile.name))
-        if d.exec() != QDialog.Accepted: return
-        self.set_builder(d.builder_name()); self.load(d.path, d.sheet_index)
+        fs = _plan_urls(e.mimeData())
+        if not fs: return
+        if self.plan: self._add_files(fs)          # dropped onto an open plan: more of the builder's files
+        else: self.new_cleanup(fs)
 
     # ---------- saving
     def library_blocks(self):
@@ -689,8 +799,25 @@ class MainWindow(QMainWindow):
             old = self.settings.block_library; d.apply()
             if self.settings.block_library != old: self._lib = None; self._shapes = None
 
+    def save_plan_dwg(self):
+        """Write every area in the plan into one drawing."""
+        if self.result is not None:
+            # the area on screen hasn't gone into the plan yet
+            what = 'Update area %d in the plan with your changes' % (self.editing + 1) if self.editing is not None else 'Add the area you just cleaned to the plan'
+            r = QMessageBox.question(self, 'Save drawing', what + ' before saving?', QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if r == QMessageBox.Cancel: return
+            if r == QMessageBox.Yes: self.add_to_plan()
+        if not (self.plan and self.plan.items):
+            QMessageBox.information(self, 'Save drawing', 'Nothing in the plan yet. Clean an area and click Add to plan first.'); return
+        try: results = [self.plan.result(it) for it in self.plan.items]
+        except Exception as e: QMessageBox.critical(self, 'Save failed', f'Could not read a saved area:\n{e}'); return
+        self._write(combine(results, self.settings.text_height_title), self.plan.dwg_path or f'{self.plan.name}.dwg', layout=False)
+
     def save_result(self):
         if not self.result: return
+        self._write(self.result, 'cleaned plan.dwg')
+
+    def _write(self, res, default_name, layout=True):
         lib = self.library()
         if lib is None:
             if QMessageBox.question(self, 'Block library', 'Your block library is not set, so symbols will be placeholders. '
@@ -698,14 +825,15 @@ class MainWindow(QMainWindow):
                 self.open_settings(); lib = self.library()
         exe = oda.find_converter(self.settings.oda_path)
         flt = 'AutoCAD drawing (*.dwg);;DXF (*.dxf)' if exe else 'DXF (*.dxf)'
-        f, chosen = QFileDialog.getSaveFileName(self, 'Save cleaned plan', 'cleaned plan.dwg' if exe else 'cleaned plan.dxf', flt)
+        if not exe: default_name = str(Path(default_name).with_suffix('.dxf'))
+        f, chosen = QFileDialog.getSaveFileName(self, 'Save drawing', default_name, flt)
         if not f: return
         want_dwg = f.lower().endswith('.dwg') or (exe and 'dwg' in chosen and not f.lower().endswith('.dxf'))
         tmp = Path(tempfile.mkdtemp()) / 'cleaned.dxf'
-        missing = dxfout.write_dxf(self.result, str(tmp), lib, self.settings.block_for,
+        missing = dxfout.write_dxf(res, str(tmp), lib, self.settings.block_for,
                                    self.settings.text_height_room, self.settings.text_height_note,
                                    self.settings.text_layer, self.settings.symbol_layer, self.settings.text_style,
-                                   self.settings.text_height_title)
+                                   self.settings.text_height_title, layout=layout)
         try:
             if want_dwg:
                 if not f.lower().endswith('.dwg'): f += '.dwg'
@@ -714,6 +842,7 @@ class MainWindow(QMainWindow):
                 import shutil; shutil.copy(tmp, f)
         except Exception as e:
             QMessageBox.critical(self, 'Save failed', str(e)); return
+        if self.plan and not layout: self.plan.dwg_path = f; self.plan.save()
         msg = f'Saved {Path(f).name}.'
         if missing: msg += '\n\nThese blocks were not in your library, so placeholders were used: ' + ', '.join(missing)
         if not exe: msg += '\n\nInstall the free ODA File Converter to save DWG directly.'
@@ -723,7 +852,7 @@ def main():
     app = QApplication(sys.argv); app.setApplicationName('Plan Cleanup')
     from . import style; style.apply(app)
     w = MainWindow(); w.showMaximized()          # fill the screen (not macOS full-screen mode)
-    if len(sys.argv) > 1: w.load(sys.argv[1])
+    if len(sys.argv) > 1: w.load(sys.argv[1:])
     else: QTimer.singleShot(200, w.new_cleanup)    # start with the New cleanup window
     sys.exit(app.exec())
 

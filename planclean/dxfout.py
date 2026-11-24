@@ -4,7 +4,7 @@ import math
 import ezdxf
 from ezdxf.addons import Importer
 from ezdxf.enums import TextEntityAlignment
-from .result import Result, rotation_deg
+from .result import Result, rotation_deg, sheet_layout
 from .symbols import ORIENTED
 
 LAYERS = [('BASE-WALLS', 7), ('BASE-DOORS-WINDOWS', 8), ('BASE-CABINETS', 8), ('BASE-MISC', 8),
@@ -108,7 +108,8 @@ def _placeholders(doc):
         b = doc.blocks.new('UNMAPPED'); b.add_circle((0, 0), 3); b.add_line((-3, 0), (3, 0)); b.add_line((0, -3), (0, 3))
 
 def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_note=3.0,
-              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes', text_title=9.0):
+              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True):
+    """layout=False: the texts are already placed (a combined Plan)."""
     out = ezdxf.new('R2018', setup=True)
     out.header['$INSUNITS'] = 1  # inches
     for name, col in LAYERS:
@@ -161,7 +162,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
         except Exception: pass
         if s.review:
             msp.add_circle((s.x, s.y), 12, dxfattribs={'layer': 'REVIEW'})
-    for t in res.texts:
+    for t in (sheet_layout(res, text_title) if layout else res.texts):
         if t.kind in ('room', 'title'):
             msp.add_mtext('\\P'.join(t.lines), dxfattribs={'layer': text_layer, 'style': text_style,
                                                            'char_height': text_title if t.kind == 'title' else text_room, 'color': 7,

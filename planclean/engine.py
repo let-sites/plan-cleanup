@@ -694,17 +694,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     if titles:
         titles.sort(key=lambda w: (w['dbb'][1], w['dbb'][0]))      # top line first, as the sheet reads
         lines = [title_text(w['n']) for w in titles]
-        # the title (and the scale line) go centred under the plan, as on a finished sheet
-        pts = [v for _, q, _ in res.lines for v in q] + syms
-        xs = [v[0] for v in pts]; ys = [v[1] for v in pts]
-        if xs:
-            X = (min(xs) + max(xs)) / 2; top = min(ys) - 18.0
-        else:
-            X, top = tx(sum(w['cx'] for w in titles) / len(titles), sum(w['cy'] for w in titles) / len(titles))
-        th = TITLE_H * 1.4 * len(lines)
-        res.texts.append(Text('title', lines, X, top - th / 2))
-        for t in res.texts:
-            if t.kind == 'note' and t.lines[0].startswith('SCALE'):
-                t.x, t.y = X, top - th - 8.0
+        # the preview keeps it where the builder wrote it, like the room names;
+        # sheet_layout() moves it (and the scale line) under the plan when the drawing is saved
+        X, Y = tx(sum(w['cx'] for w in titles) / len(titles), sum(w['cy'] for w in titles) / len(titles))
+        res.texts.append(Text('title', lines, X, Y))
     res.stats = dict(removed=removed, words=len(words), symbols=len(hits))
     return res

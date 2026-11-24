@@ -7,24 +7,69 @@ from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QImage, QPixmap, QIcon, QFont
 from PySide6.QtWidgets import (QStackedWidget, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QListWidget,
                                QListWidgetItem, QFileDialog, QInputDialog, QListView, QFrame, QRadioButton, QCheckBox, QButtonGroup,
-                               QDialogButtonBox, QMessageBox)
+                               QDialogButtonBox, QMessageBox, QLineEdit)
 from planclean.profile import Profile, safe_name
 from planclean import oda
 
 THUMB = 260
 PLAN_EXTS = ('.pdf', '.dwg', '.dxf')
 
-def _plan_url(mime):
-    """The first dragged file that is a plan, or None."""
-    if not mime.hasUrls(): return None
+def _plan_urls(mime):
+    """Every dragged file that is a plan."""
+    out = []
+    if not mime.hasUrls(): return out
     for u in mime.urls():
         f = u.toLocalFile()
-        if f.lower().endswith(PLAN_EXTS): return f
+        if f.lower().endswith(PLAN_EXTS): out.append(f); continue
         try:
             with open(f, 'rb') as fh:
-                if fh.read(5) == b'%PDF-': return f      # a PDF saved without its .pdf ending
+                if fh.read(5) == b'%PDF-': out.append(f)      # a PDF saved without its .pdf ending
         except OSError: pass
-    return None
+    return out
+
+def _plan_url(mime):
+    """The first dragged file that is a plan, or None."""
+    u = _plan_urls(mime); return u[0] if u else None
+
+
+class OpenPlanDialog(QDialog):
+    """Your saved Plans, newest first: open one, or delete ones you're done with."""
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setWindowTitle('Open a saved plan'); self.folder = None
+        from planclean.plan import Plan
+        self.Plan = Plan
+        v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 18)
+        t = QLabel('Saved plans'); t.setStyleSheet('font-size:22px;font-weight:700'); v.addWidget(t)
+        self.lst = QListWidget(); self.lst.itemDoubleClicked.connect(lambda _: self.open_sel()); v.addWidget(self.lst, 1)
+        row = QHBoxLayout()
+        d = QPushButton('Delete…'); d.clicked.connect(self.delete); row.addWidget(d); row.addStretch()
+        c = _big('Cancel'); c.clicked.connect(self.reject); row.addWidget(c)
+        self.ok = _big('Open', primary=True); self.ok.clicked.connect(self.open_sel); row.addWidget(self.ok)
+        v.addLayout(row); self.refresh(); self.resize(560, 480)
+
+    def refresh(self):
+        import time
+        self.lst.clear()
+        for name, folder, mt in self.Plan.list_saved():
+            it = QListWidgetItem(f'{name}    ·    {time.strftime("%b %d, %Y %I:%M %p", time.localtime(mt))}')
+            it.setData(Qt.UserRole, folder); it.setSizeHint(QSize(100, 34)); self.lst.addItem(it)
+        if self.lst.count(): self.lst.setCurrentRow(0)
+        self.ok.setEnabled(self.lst.count() > 0)
+
+    def open_sel(self):
+        it = self.lst.currentItem()
+        if it: self.folder = it.data(Qt.UserRole); self.accept()
+
+    def delete(self):
+        it = self.lst.currentItem()
+        if not it: return
+        name = it.text().split('    ·')[0]
+        box = QMessageBox(QMessageBox.Warning, 'Delete plan', f'Delete the saved plan "{name}"?\n\n'
+                          'This removes the cleaned areas saved with it. The builder\'s PDFs and any DWG you saved are not touched.', parent=self)
+        yes = box.addButton('Delete', QMessageBox.DestructiveRole); box.addButton(QMessageBox.Cancel); box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is yes:
+            import shutil; shutil.rmtree(it.data(Qt.UserRole), ignore_errors=True); self.refresh()
 
 class DropOverlay(QLabel):
     """A blue sheet over a window while a plan file is dragged onto it."""
@@ -154,27 +199,33 @@ def _big(text, primary=False):
 class StartDialog(QDialog):
     def __init__(self, settings, parent=None, open_settings=None):
         super().__init__(parent)
-        self.setWindowTitle('New cleanup'); self.settings = settings; self.open_settings = open_settings
-        self.path = None; self.doc = None; self.sheet_index = 0
+        self.setWindowTitle('New plan'); self.settings = settings; self.open_settings = open_settings
+        self.path = None; self.paths = []; self.doc = None; self.sheet_index = 0; self.open_folder = None; self._named = False
         self.setAcceptDrops(True)
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget(); outer.addWidget(self.stack)
 
         # ---- page 1: plan file and builder
         p1 = QWidget(); v = QVBoxLayout(p1); v.setContentsMargins(32, 26, 32, 22)
-        t = QLabel('New cleanup'); t.setStyleSheet('font-size:26px;font-weight:700'); v.addWidget(t)
-        sub = QLabel('Choose the builder\'s plan and who the builder is.'); sub.setProperty('kind', 'muted'); v.addWidget(sub)
-        v.addWidget(_heading('1', 'Builder\'s plan (PDF or DWG)'))
+        t = QLabel('New plan'); t.setStyleSheet('font-size:26px;font-weight:700'); v.addWidget(t)
+        sub = QLabel('Name it, add the builder\'s files, and choose the builder. Everything you clean goes into one drawing, '
+                     'and the plan is saved so you can come back to it.'); sub.setProperty('kind', 'muted'); sub.setWordWrap(True); v.addWidget(sub)
+        v.addWidget(_heading('1', 'Plan name (also the drawing\'s file name)'))
+        self.plan_name = QLineEdit(); self.plan_name.setPlaceholderText('e.g. C405 Electrical'); self.plan_name.setMinimumHeight(34)
+        self.plan_name.textEdited.connect(lambda _: setattr(self, '_named', True)); self.plan_name.textChanged.connect(self.update_state)
+        v.addWidget(self.plan_name)
+        v.addWidget(_heading('2', 'Builder\'s files (PDF or DWG, one or several)'))
         self.drop = drop = QFrame(); self._drop_style(False)
         dv = QVBoxLayout(drop); dv.setContentsMargins(20, 22, 20, 22)
         self.name_lbl = QLabel(); self.name_lbl.setAlignment(Qt.AlignCenter); self.name_lbl.setWordWrap(True)
         self.name_lbl.setStyleSheet('border:none;background:transparent;font-weight:700;font-size:17px'); self.name_lbl.hide()
         dv.addWidget(self.name_lbl)
-        self.file_btn = _big('Choose plan file…', primary=True); self.file_btn.clicked.connect(self.choose_file)
-        self.file_lbl = QLabel('or drag the file here'); self.file_lbl.setAlignment(Qt.AlignCenter); self.file_lbl.setStyleSheet('border:none;background:transparent;color:#6b7a86')
-        row = QHBoxLayout(); row.addStretch(); row.addWidget(self.file_btn); row.addStretch(); dv.addLayout(row); dv.addWidget(self.file_lbl)
+        self.file_btn = _big('Choose files…', primary=True); self.file_btn.clicked.connect(self.choose_file)
+        self.file_lbl = QLabel('or drag them here'); self.file_lbl.setAlignment(Qt.AlignCenter); self.file_lbl.setStyleSheet('border:none;background:transparent;color:#6b7a86')
+        self.clear_btn = QPushButton('Clear'); self.clear_btn.clicked.connect(self.clear_files); self.clear_btn.hide()
+        row = QHBoxLayout(); row.addStretch(); row.addWidget(self.file_btn); row.addWidget(self.clear_btn); row.addStretch(); dv.addLayout(row); dv.addWidget(self.file_lbl)
         v.addWidget(drop)
-        v.addWidget(_heading('2', 'Builder'))
+        v.addWidget(_heading('3', 'Builder'))
         row = QHBoxLayout(); self.builder = QComboBox(); self.builder.setMinimumWidth(300)
         self.builder.currentIndexChanged.connect(self.update_state)
         nb = _big('New builder…'); nb.clicked.connect(self.new_builder)
@@ -188,7 +239,8 @@ class StartDialog(QDialog):
         self.warn.setStyleSheet('background:#fff8e6;border:1px solid #f0d48a;border-radius:8px;padding:10px')
         self.warn_btn = _big('Open Settings'); self.warn_btn.clicked.connect(self.fix_settings)
         row = QHBoxLayout(); row.addWidget(self.warn, 1); row.addWidget(self.warn_btn); v.addLayout(row)
-        row = QHBoxLayout(); row.addStretch()
+        row = QHBoxLayout()
+        op = _big('Open a saved plan…'); op.clicked.connect(self.open_saved); row.addWidget(op); row.addStretch()
         c = _big('Cancel'); c.clicked.connect(self.reject); row.addWidget(c)
         self.next = _big('Next', primary=True); self.next.clicked.connect(self.go_next); row.addWidget(self.next)
         v.addLayout(row)
@@ -257,8 +309,16 @@ class StartDialog(QDialog):
 
     # ----- file
     def choose_file(self):
-        f, _ = QFileDialog.getOpenFileName(self, 'Choose the builder\'s plan', '', 'Plans (*.pdf *.dwg)')
-        if f: self.set_file(f)
+        fs, _ = QFileDialog.getOpenFileNames(self, 'Choose the builder\'s files', '', 'Plans (*.pdf *.dwg)')
+        for f in fs: self.set_file(f)
+
+    def open_saved(self):
+        d = OpenPlanDialog(self)
+        if d.exec() == QDialog.Accepted and d.folder: self.open_folder = d.folder; self.accept()
+
+    def clear_files(self):
+        self.paths = []; self.path = None; self.name_lbl.hide(); self.file_lbl.show(); self.clear_btn.hide()
+        self.file_btn.setText('Choose files…'); self.update_state()
 
     def _drop_style(self, active):
         """The dotted drop box turns blue while a plan is dragged over the window."""
@@ -275,14 +335,15 @@ class StartDialog(QDialog):
 
     def dropEvent(self, e):
         self._drop_style(False)
-        f = _plan_url(e.mimeData())
-        if f: self.set_file(f)
+        for f in _plan_urls(e.mimeData()): self.set_file(f)
 
     def set_file(self, f):
-        self.path = f
-        # the file name takes the top spot; the button shrinks to "Replace file…" underneath (one plan at a time)
-        self.name_lbl.setText(Path(f).name); self.name_lbl.show(); self.file_lbl.hide()
-        self.file_btn.setText('Replace file…'); self.file_btn.setProperty('kind', 'big'); self.file_btn.setMinimumHeight(28)
+        if f in self.paths: return
+        self.paths.append(f); self.path = self.paths[0]
+        if not self._named: self.plan_name.setText(Path(self.paths[0]).stem)
+        # the file names take the top spot; the button becomes "Add more files…" underneath
+        self.name_lbl.setText('<br>'.join(Path(p).name for p in self.paths)); self.name_lbl.show(); self.file_lbl.hide(); self.clear_btn.show()
+        self.file_btn.setText('Add more files…'); self.file_btn.setProperty('kind', 'big'); self.file_btn.setMinimumHeight(28)
         self.file_btn.style().unpolish(self.file_btn); self.file_btn.style().polish(self.file_btn)
         self.sheets.clear(); self._timer.stop(); self.doc = None
         try:
@@ -310,7 +371,7 @@ class StartDialog(QDialog):
 
     def update_state(self, *_):
         if not hasattr(self, 'start'): return
-        self.next.setEnabled(bool(self.path and self.builder_name())); self.bset.setEnabled(bool(self.builder_name()))
+        self.next.setEnabled(bool(self.paths and self.builder_name() and self.plan_name.text().strip())); self.bset.setEnabled(bool(self.builder_name()))
         self.next.setText('Open')
         self.start.setEnabled(self.sheets.currentRow() >= 0)
         self.sheet_index = max(self.sheets.currentRow(), 0)

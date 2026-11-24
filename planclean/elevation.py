@@ -131,6 +131,18 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
             if any(touches(r, q) for q in anchor): new.append(i)
         if not new: break
         attached |= set(new); anchor = anchor + [rects[i] for i in new]
+    # what's drawn inside an attached piece (the stone on a post's base) belongs to it
+    groups = []                                           # attached pieces that touch, as boxes
+    for i in attached:
+        r = rects[i]; hit = [g for g in groups if touches(r, g)]
+        for g in hit: groups.remove(g)
+        for g in hit: r = (min(r[0], g[0]), min(r[1], g[1]), max(r[2], g[2]), max(r[3], g[3]))
+        groups.append(r)
+    boxes_att = [g for g in groups if (g[2] - g[0]) * (g[3] - g[1]) > 50]
+    for i, p in enumerate(pl):
+        r = rects[i]
+        if i in attached or not outside(r) or any(_inside_frac(r, b) > 0.6 for _, b in drop_w): continue
+        if any(r[0] >= q[0] - 0.5 and r[2] <= q[2] + 0.5 and r[1] >= q[1] - 0.5 and r[3] <= q[3] + 0.5 for q in boxes_att): attached.add(i)
     for i, p in enumerate(pl):
         if pen_key(p) == opk: continue
         r = rects[i]; size = max(r[2] - r[0], r[3] - r[1])

@@ -79,7 +79,7 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent); self.setWindowTitle('Settings'); self.s = settings
         outer = QVBoxLayout(self); outer.setContentsMargins(20, 16, 20, 14)
-        tabs = QTabWidget(); outer.addWidget(tabs, 1)
+        tabs = QTabWidget(); tabs.setObjectName('pilltabs'); outer.addWidget(tabs, 1)
 
         # -- Files and text
         g = QWidget(); f = QFormLayout(g); f.setContentsMargins(16, 16, 16, 16); f.setVerticalSpacing(14); f.setHorizontalSpacing(14)
@@ -368,13 +368,15 @@ class MainWindow(QMainWindow):
         a = QAction(self.examples); a.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
         a.setShortcutContext(Qt.WidgetShortcut); a.triggered.connect(self.remove_example); self.examples.addAction(a)
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); self.teach_btn.hide()
-        b = _big('Done: save and clean the area', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
+        self.teach_done = _big('Done: save and clean the area', primary=True); self.teach_done.clicked.connect(self.save_and_clean); v.addWidget(self.teach_done)
         return w
 
     def open_teach(self):
         if not self.profile: QMessageBox.information(self, 'Teach symbols', 'Start or open a plan first.'); return
         self._teach_from = self.tabs.currentIndex() if self.tabs.currentIndex() != 1 else 0
         self.tabs.setCurrentIndex(1)
+        # from the review: Done goes back to it, your fixes kept (Start over cleans again with what you taught)
+        self.teach_done.setText('Done: back to the review' if self.result else 'Done: save and clean the area')
         if self.region: self.view.clear_overlay(); self.view.page_item and self.view.page_item.setOpacity(1.0); self.view.set_mode('teach')
         self.show_ex_markers()
         self.statusBar().showMessage('Click the centre of a builder symbol to teach it. Green boxes are ones already taught.')
@@ -383,6 +385,7 @@ class MainWindow(QMainWindow):
         self.roles.clearSelection(); self.view.remove_ex_marker(); self._picked_ex = None
         if self.view.mode == 'teach': self.view.set_mode('review' if self.result else 'box')
         self.tabs.setCurrentIndex(2 if self.result else getattr(self, '_teach_from', 0) or 0)
+        if self.result: self.draw_result()
 
     def builder_settings(self):
         if not self.profile: QMessageBox.information(self, 'Builder', 'Choose or create a builder first.'); return
@@ -391,7 +394,11 @@ class MainWindow(QMainWindow):
             if self.sheet: self.run_clean()
 
     def save_and_clean(self):
-        self.save_profile(); self.run_clean()
+        self.save_profile()
+        if self.result:                 # came from the review: don't throw away the fixes made there
+            self.close_teach(); self.statusBar().showMessage('Saved. Click Start over to clean this area again with the symbols you taught.', 8000); return
+        self.view.remove_ex_marker(); self._picked_ex = None
+        self.run_clean()
 
     def _tab_review(self):
         w = QWidget(); v = QVBoxLayout(w)
@@ -945,6 +952,7 @@ class MainWindow(QMainWindow):
         self._job = job; job.start(); tick(); timer.start(200)
 
     def on_cleaned(self, res: Result):
+        self.view.remove_ex_marker(); self._picked_ex = None          # taught-symbol boxes belong to the Teach page
         self.result = res; self.tabs.setCurrentIndex(2); self.view.set_mode('review'); self.statusBar().clearMessage()
         from collections import Counter
         c = Counter(s.cls for s in res.symbols)

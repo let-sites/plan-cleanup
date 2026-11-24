@@ -940,7 +940,7 @@ class MainWindow(QMainWindow):
         s = getattr(self, '_sel', None)
         if s is None or not hasattr(s, 'cls'): return
         self._snap()
-        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._learn_symbol(s); self._after_review_change()
+        s.cls = list(SYMBOL_TYPES)[i]; s.review = ''; self._learn_symbol(s, by_user=True); self._after_review_change()
 
     def delete_sel(self):
         s = getattr(self, '_sel', None)
@@ -960,8 +960,15 @@ class MainWindow(QMainWindow):
         s.review = ''; self._after_review_change()
 
     # ---------- learning from the review (saved to the builder; undo on the Teach tab / Builder settings)
-    def _learn_symbol(self, s):
+    def _learn_symbol(self, s, by_user=False):
         """Save the builder's drawing under a reviewed symbol as an example of its (corrected) type."""
+        shape = getattr(s, 'shape', '') or ''
+        LIGHTS = {'ceiling_light', 'wall_light'}
+        if shape and shape != s.cls and not {shape, s.cls} <= LIGHTS:
+            # its type came from a note (CLG FAN, 220V, DISK), not its drawing: the drawing is still a <shape>.
+            # Teaching it as the new type would make every such symbol that type.
+            # (Correcting a symbol it simply misread, e.g. a 'fan' that is really a ceiling light, is still learned.)
+            if not by_user or (s.cls in ('fan', 'outlet_240', 'disk_light') and s.score >= 0.85): return
         if not (self.profile and self.sheet and self.sheet.kind == 'pdf' and self.region and self.result and self.result.to_page):
             return
         try:

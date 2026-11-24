@@ -15,6 +15,7 @@ class Sym:
     review: str = ""         # why a person should look at it ('' = fine)
     src: tuple = ()          # where it came from on the source sheet (page points)
     wall: float | None = None   # distance from the centre back to the wall it sits on (drawing units)
+    shape: str = ""          # the type its drawing matched, before a note or a wall changed it ('' = same / unknown)
 
 @dataclass
 class Text:

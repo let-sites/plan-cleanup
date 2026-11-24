@@ -152,7 +152,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     used = set()
     RATING_PART = re.compile(r'2[24]0|\b\d{2} ?A\b|[GS]FC')        # bits of a circuit rating ('220V 40A GFCI')
     for h in hits:
-        h['mods'] = []
+        h['mods'] = []; h['shape'] = h['cls']          # what the drawing matched, before notes and walls change it
         for w in words:
             if math.hypot(w['cx'] - h['x'], w['cy'] - h['y']) < 16:
                 for m in ('GFI', 'WP', 'DISK', '220', '240', 'CLG'):
@@ -193,12 +193,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                     if v in group or id(v) in used: continue
                     near = min(gap(v['bb'], g['bb']) for g in group)
                     if near < 12 and (NOTE_WORD.search(v['n']) or len(v['n']) <= 3): group.append(v); grown = True
-            cands = [h for h in hits if h['cls'] in ('ceiling_light', 'disk_light')]
+            cands = [h for h in hits if h['cls'] in ('ceiling_light', 'disk_light', 'fan')]   # a fan already: its note still takes the wires
             if cands:
                 h = min(cands, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
                 if math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < 60:
+                    if h['cls'] != 'fan': h['review'] = 'Turned into a fan from the builder note'
                     h['cls'] = 'fan'; h['mods'].append('note: ' + ' '.join(g['text'] for g in group))
-                    h['review'] = 'Turned into a fan from the builder note'
                     for g in group: h.setdefault('note_boxes', []).append(g['bb'])   # wires drawn to the note go to the fan
                     for g in group: used.add(id(g))
 
@@ -669,7 +669,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for hi, h in enumerate(hits):
         if hi in hidden: continue
         X, Y = tx(h['x'], h['y'])
-        s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']))
+        s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']), shape=h.get('shape', ''))
         d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()))
         s.dx, s.dy = ux, -uy
         if s.cls in ORIENTED and d <= 18: s.wall = d * K      # the block's insert point goes on this wall line

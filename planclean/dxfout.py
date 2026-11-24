@@ -108,12 +108,16 @@ def _placeholders(doc):
         b = doc.blocks.new('UNMAPPED'); b.add_circle((0, 0), 3); b.add_line((-3, 0), (3, 0)); b.add_line((0, -3), (0, 3))
 
 def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_note=3.0,
-              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True):
-    """layout=False: the texts are already placed (a combined Plan)."""
-    out = ezdxf.new('R2018', setup=True)
-    out.header['$INSUNITS'] = 1  # inches
+              text_layer='$Circuits', symbol_layer='$Standard', text_style='Notes', text_title=9.0, layout=True, base=None):
+    """layout=False: the texts are already placed (a combined Plan).
+    base: a drawing to add to (your master template); the plan goes in empty model space above what's there."""
+    out = base if base is not None else ezdxf.new('R2018', setup=True)
+    if base is not None:
+        res = _moved_clear_of(res, out)
+    else:
+        out.header['$INSUNITS'] = 1  # inches
     for name, col in LAYERS:
-        out.layers.add(name, color=col)
+        if name not in out.layers: out.layers.add(name, color=col)
     # your own layers; when pasted into a template, the template's layer settings win
     if text_layer not in out.layers: out.layers.add(text_layer, color=1)
     if symbol_layer not in out.layers: out.layers.add(symbol_layer, color=7)
@@ -174,3 +178,46 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             msp.add_circle((t.x, t.y), 14, dxfattribs={'layer': 'REVIEW'})
     out.saveas(path)
     return sorted(m for m in missing if m)
+
+
+def _moved_clear_of(res, doc, gap=240.0):
+    """The result moved so it sits above everything already in the drawing's model space, left edges lined up."""
+    from ezdxf import bbox
+    import copy
+    try: ext = bbox.extents(doc.modelspace(), fast=True)
+    except Exception: ext = None
+    if ext is None or not ext.has_data: return res
+    xs = [x for _, q, _ in res.lines for x, _ in q] + [s.x for s in res.symbols] + [t.x for t in res.texts]
+    ys = [y for _, q, _ in res.lines for _, y in q] + [s.y for s in res.symbols] + [t.y for t in res.texts]
+    if not xs: return res
+    dx = ext.extmin.x - min(xs); dy = ext.extmax.y + gap - min(ys)
+    out = copy.copy(res)
+    out.lines = [(r, [(x + dx, y + dy) for x, y in q], f) for r, q, f in res.lines]
+    out.arcs = [(r, cx + dx, cy + dy, rr, a0, a1) for r, cx, cy, rr, a0, a1 in res.arcs]
+    out.symbols = []
+    for s in res.symbols:
+        s = copy.copy(s); s.x += dx; s.y += dy; out.symbols.append(s)
+    out.texts = []
+    for t in res.texts:
+        t = copy.copy(t); t.x += dx; t.y += dy; out.texts.append(t)
+    return out
+
+
+def open_template(path, exe):
+    """Your master template, read fresh from disk."""
+    from ezdxf import recover
+    from . import oda
+    doc, _ = recover.readfile(oda.to_dxf(path, exe))
+    return doc
+
+
+def blank_like(template):
+    """A new, empty drawing with the template's layers, text styles, dimension styles and units, but none of its drawings."""
+    out = ezdxf.new(template.dxfversion if template.dxfversion >= 'AC1027' else 'R2018')
+    imp = Importer(template, out)
+    imp.import_tables(('layers', 'linetypes', 'styles', 'dimstyles'))
+    imp.finalize()
+    for k in ('$INSUNITS', '$LUNITS', '$LUPREC', '$DIMSCALE', '$LTSCALE', '$DIMSTYLE', '$TEXTSTYLE'):
+        try: out.header[k] = template.header[k]
+        except Exception: pass
+    return out

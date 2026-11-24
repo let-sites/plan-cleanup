@@ -32,6 +32,7 @@ class Plan:
     builder: str = ''
     files: list = field(default_factory=list)
     dwg_path: str = ''           # where the drawing was last saved
+    template: str = ''           # your master template for this plan ('' = start blank); read fresh at every save
     items: list = field(default_factory=list)
     folder: str = ''
 
@@ -50,11 +51,11 @@ class Plan:
         return sorted(out, key=lambda r: -r[2])
 
     @staticmethod
-    def create(name, builder='', files=()):
+    def create(name, builder='', files=(), template=''):
         base = safe_name(name) or 'plan'; d = Plan.plans_dir() / base; n = 2
         while d.exists(): d = Plan.plans_dir() / f'{base} ({n})'; n += 1
         d.mkdir(parents=True)
-        p = Plan(name=name, builder=builder or '', files=list(files), folder=str(d)); p.save(); return p
+        p = Plan(name=name, builder=builder or '', files=list(files), template=template or '', folder=str(d)); p.save(); return p
 
     @staticmethod
     def load(folder):
@@ -62,7 +63,7 @@ class Plan:
         items = [PlanItem(**{k: v for k, v in it.items() if k in PlanItem.__dataclass_fields__}) for it in d.get('items', [])]
         for it in items: it.region = tuple(it.region)
         return Plan(name=d.get('name', Path(folder).name), builder=d.get('builder', ''), files=d.get('files', []),
-                    dwg_path=d.get('dwg_path', ''), items=items, folder=str(folder))
+                    dwg_path=d.get('dwg_path', ''), template=d.get('template', ''), items=items, folder=str(folder))
 
     def save(self):
         d = asdict(self); d.pop('folder')

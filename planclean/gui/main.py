@@ -145,7 +145,11 @@ class MainWindow(QMainWindow):
                               ('Remove', self.remove_item, 'Take this area out of the plan')]:
             b = QPushButton(txt); b.setToolTip(tipx); b.clicked.connect(fn); row.addWidget(b)
         sv.addLayout(row)
-        b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); sv.addWidget(b)
+        row = QHBoxLayout(); row.setSpacing(4)
+        b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
+        b = QPushButton('Template…'); b.setToolTip('Choose or change the master template the drawing is built on'); b.clicked.connect(self.change_template); row.addWidget(b)
+        sv.addLayout(row)
+        self.tpl_lbl = QLabel(''); self.tpl_lbl.setProperty('kind', 'muted'); self.tpl_lbl.setWordWrap(True); sv.addWidget(self.tpl_lbl)
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.addDockWidget(Qt.LeftDockWidgetArea, d); self.sheet_dock = d
         self._thumb_queue = []; self._thumb_timer = QTimer(self); self._thumb_timer.timeout.connect(self._next_thumb)
@@ -229,6 +233,8 @@ class MainWindow(QMainWindow):
         self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1)
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
+        row = QHBoxLayout(); row.addWidget(QLabel('This area is'))
+        self.area_type = QComboBox(); self.area_type.addItems(['Electrical plan', 'Option']); row.addWidget(self.area_type, 1); v.addLayout(row)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area, or click <b>Save drawing</b> at the top.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
@@ -277,7 +283,7 @@ class MainWindow(QMainWindow):
         if self.profile and d.builder.findText(self.profile.name) > 0: d.builder.setCurrentIndex(d.builder.findText(self.profile.name))
         if d.exec() != QDialog.Accepted: return
         if d.open_folder: self.open_plan(d.open_folder); return
-        self.plan = Plan.create(d.plan_name.text().strip(), d.builder_name(), d.paths)
+        self.plan = Plan.create(d.plan_name.text().strip(), d.builder_name(), d.paths, d.template)
         self.set_builder(d.builder_name())
         self.load(d.paths, d.sheet_index); self.fill_items()
 
@@ -308,12 +314,21 @@ class MainWindow(QMainWindow):
         self.plan.add_files(fs); keep = self.pages.currentRow()
         self.load([f for f in self.plan.files if Path(f).exists()], max(keep, 0))
 
+    def change_template(self):
+        if not self.plan: return
+        f, _ = QFileDialog.getOpenFileName(self, 'Choose the master template (Cancel = start blank)', str(Path(self.plan.template).parent) if self.plan.template else '',
+                                           'Drawings (*.dwg *.dxf)')
+        if not f and self.plan.template and QMessageBox.question(self, 'Template', 'Stop using a template, so the drawing starts blank?') != QMessageBox.Yes: return
+        self.plan.template = f or ''; self.plan.save(); self.fill_items()
+
     # ---------- the plan's areas
     def fill_items(self):
         self.items.clear()
         if not self.plan: self.save_btn.setEnabled(self.result is not None); return
         for i, it in enumerate(self.plan.items):
-            w = QListWidgetItem(f'{i + 1}. {it.label}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
+            typ = '' if it.area_type == 'Electrical plan' else f' ({it.area_type})'
+            w = QListWidgetItem(f'{i + 1}. {it.label}{typ}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
+        self.tpl_lbl.setText(f'Template: {Path(self.plan.template).name}' if self.plan.template else 'Template: none (blank drawing)')
         self.save_btn.setEnabled(True)
         self.setWindowTitle(f'Plan Cleanup {__version__} — {self.plan.name}'); self.update_info()
 
@@ -329,10 +344,11 @@ class MainWindow(QMainWindow):
                                     sorted({sh.path for sh in self.sheets}))
         if self.editing is not None and self.editing < len(self.plan.items):
             self.plan.replace(self.editing, self.result, self.region); n = self.editing
+            self.plan.items[n].area_type = self.area_type.currentText(); self.plan.save()
             msg = f'Updated area {n + 1} in the plan.'
         else:
             lab = getattr(self.sheet, 'label', self.sheet.title)
-            self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab)
+            self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab, self.area_type.currentText())
             msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Save drawing.'
         self.editing = None; self.fill_items(); self.redraw_box(); self.statusBar().showMessage(msg, 8000)
 
@@ -570,6 +586,9 @@ class MainWindow(QMainWindow):
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
         self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
         self.add_btn.setText('Update in plan' if self.editing is not None else 'Add to plan')
+        if self.editing is not None and self.plan: guess = self.plan.items[self.editing].area_type
+        else: guess = 'Option' if any(t.kind == 'title' and 'OPT' in ' '.join(t.lines) for t in res.texts) else 'Electrical plan'
+        if self.area_type.findText(guess) >= 0: self.area_type.setCurrentText(guess)
         self.save_btn.setEnabled(True)
         if self.view.region_item is not None: self.view.fitInView(self.view.region_item, Qt.KeepAspectRatio)
 
@@ -811,13 +830,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Save drawing', 'Nothing in the plan yet. Clean an area and click Add to plan first.'); return
         try: results = [self.plan.result(it) for it in self.plan.items]
         except Exception as e: QMessageBox.critical(self, 'Save failed', f'Could not read a saved area:\n{e}'); return
-        self._write(combine(results, self.settings.text_height_title), self.plan.dwg_path or f'{self.plan.name}.dwg', layout=False)
+        base = None
+        if self.plan.template:
+            if not Path(self.plan.template).exists():
+                if QMessageBox.question(self, 'Template not found', f'The master template isn\'t where it was:\n{self.plan.template}\n\n'
+                                        'Save on a blank drawing instead? (No: choose it again with Template… on the left.)') != QMessageBox.Yes: return
+            else:
+                try: base = dxfout.open_template(self.plan.template, oda.find_converter(self.settings.oda_path))
+                except Exception as e: QMessageBox.critical(self, 'Template', f'Could not read the master template:\n{e}'); return
+        default = str(Path(self.plan.files[0]).parent / f'{self.plan.name}.dwg') if self.plan.files else f'{self.plan.name}.dwg'   # next to the builder's PDF
+        self._write(combine(results, self.settings.text_height_title), self.plan.dwg_path or default, layout=False, base=base)
 
     def save_result(self):
         if not self.result: return
         self._write(self.result, 'cleaned plan.dwg')
 
-    def _write(self, res, default_name, layout=True):
+    def _write(self, res, default_name, layout=True, base=None):
         lib = self.library()
         if lib is None:
             if QMessageBox.question(self, 'Block library', 'Your block library is not set, so symbols will be placeholders. '
@@ -833,7 +861,7 @@ class MainWindow(QMainWindow):
         missing = dxfout.write_dxf(res, str(tmp), lib, self.settings.block_for,
                                    self.settings.text_height_room, self.settings.text_height_note,
                                    self.settings.text_layer, self.settings.symbol_layer, self.settings.text_style,
-                                   self.settings.text_height_title, layout=layout)
+                                   self.settings.text_height_title, layout=layout, base=base)
         try:
             if want_dwg:
                 if not f.lower().endswith('.dwg'): f += '.dwg'

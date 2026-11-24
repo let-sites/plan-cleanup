@@ -234,6 +234,12 @@ class StartDialog(QDialog):
         mb.clicked.connect(self.manage_builders)
         row.addWidget(self.builder); row.addWidget(nb); row.addWidget(self.bset); row.addWidget(mb); row.addStretch(); v.addLayout(row)
         self.fill_builders()
+        v.addWidget(_heading('4', 'Master template (optional)'))
+        row = QHBoxLayout(); self.template = ''
+        self.tpl_lbl = QLabel('None: the drawing starts blank'); self.tpl_lbl.setProperty('kind', 'muted')
+        tb = _big('Choose template…'); tb.clicked.connect(self.choose_template)
+        self.tpl_clear = QPushButton('Clear'); self.tpl_clear.clicked.connect(lambda: self.set_template('')); self.tpl_clear.hide()
+        row.addWidget(tb); row.addWidget(self.tpl_lbl, 1); row.addWidget(self.tpl_clear); v.addLayout(row)
         v.addStretch()
         self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setTextFormat(Qt.RichText)
         self.warn.setStyleSheet('background:#fff8e6;border:1px solid #f0d48a;border-radius:8px;padding:10px')
@@ -311,6 +317,14 @@ class StartDialog(QDialog):
     def choose_file(self):
         fs, _ = QFileDialog.getOpenFileNames(self, 'Choose the builder\'s files', '', 'Plans (*.pdf *.dwg)')
         for f in fs: self.set_file(f)
+
+    def choose_template(self):
+        f, _ = QFileDialog.getOpenFileName(self, 'Choose the master template', '', 'Drawings (*.dwg *.dxf)')
+        if f: self.set_template(f)
+
+    def set_template(self, f):
+        self.template = f
+        self.tpl_lbl.setText(Path(f).name if f else 'None: the drawing starts blank'); self.tpl_clear.setVisible(bool(f))
 
     def open_saved(self):
         d = OpenPlanDialog(self)

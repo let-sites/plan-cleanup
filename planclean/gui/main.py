@@ -869,6 +869,7 @@ class MainWindow(QMainWindow):
                              f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
         self.draw_result(); self.fill_review(); self.orig_btn.show(); self.orig_btn.raise_()
         self.save_btn.setEnabled(True)
+        QTimer.singleShot(300, lambda r=res: self.check_scale(r))
         QTimer.singleShot(0, self.view.fit)            # zoom to the box you drew
         self.add_btn.setText('Update in plan' if self.editing is not None else 'Add to plan')
         elev = res.stats.get('kind') == 'elevation'
@@ -888,6 +889,25 @@ class MainWindow(QMainWindow):
         lv = self.plan.items[self.editing].level if (self.editing is not None and self.plan) else ''
         self.level_cb.setCurrentIndex(LEVELS.index(lv) if lv in LEVELS else level_rank(res))
         show = self.area_type.currentText() == 'Electrical plan'; self.level_lbl.setVisible(show); self.level_cb.setVisible(show)
+
+    def check_scale(self, res):
+        """The sheet's own SCALE note against the builder's drawing scale: offer to switch when they differ."""
+        import re as _re
+        if not (self.profile and res is self.result): return
+        for t in res.texts:
+            m = _re.search(r'SCALE:?\s*(\d+)/(\d+)', ' '.join(t.lines))
+            if not m: continue
+            a, b = int(m.group(1)), int(m.group(2))
+            if not a: continue
+            k = round(12 * b / a)                       # inches of building per inch of paper (1/4" -> 48)
+            cur = round(self.profile.inches_per_pt * 72)
+            if k == cur or k not in [v for _, v in SCALES]: return
+            name = next(n for n, v in SCALES if v == k); now = next((n for n, v in SCALES if v == cur), f'{cur}')
+            r = QMessageBox.question(self, 'Drawing scale', f'This sheet says SCALE {a}/{b}" = 1\'-0", but {self.profile.name} is set to {now}.\n\n'
+                                     f'Switch {self.profile.name} to {name} and clean this area again?')
+            if r == QMessageBox.Yes:
+                self.profile.inches_per_pt = k / 72; self._save_quietly(); self.after_profile_change(); self.run_clean()
+            return
 
     def area_type_changed(self, _=None):
         """Switching between a plan and an elevation cleans the box again the other way."""
@@ -1292,6 +1312,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, 'Saved', msg)
 
 def main():
+    # a hard crash (inside Qt) leaves no Python error; this writes where it happened to crash.log in the settings folder
+    try:
+        import faulthandler
+        from planclean.profile import config_dir
+        _crash = open(config_dir() / 'crash.log', 'a'); faulthandler.enable(_crash, all_threads=True)
+        main._crash = _crash
+    except Exception: pass
     app = QApplication(sys.argv); app.setApplicationName('Plan Cleanup')
     from . import style; style.apply(app)
     w = MainWindow(); w.showMaximized()          # fill the screen (not macOS full-screen mode)

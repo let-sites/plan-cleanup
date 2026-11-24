@@ -477,36 +477,45 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 if h >= 0 and hits[h]['cls'] not in ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet'):
                     return True
             return False
-        changed = True
-        while changed:
-            changed = False
+        # what each chain's ends look like, worked out once (and again only for a chain that just grew)
+        def info(seq):
+            return (bent(seq), [end(seq, False), end(seq, True)], [loose(seq, False), loose(seq, True)])
+        infos = [info(c) for c in chains]
+        reach = 2.5 * gap
+        while True:
+            grid = {}
+            for i, (_, ends_, lo) in enumerate(infos):
+                for li in (0, 1):
+                    if lo[li]:
+                        pt = ends_[li][0]; grid.setdefault((int(pt[0] // reach), int(pt[1] // reach)), []).append((i, li))
             best = None
-            for i in range(len(chains)):
-                bi = bent(chains[i])
-                for li in (False, True):
-                    pa, da = end(chains[i], li)
-                    if not loose(chains[i], li): continue
-                    for j in range(i + 1, len(chains)):
-                        bj = bent(chains[j])
-                        for lj in (False, True):
-                            pb, db = end(chains[j], lj)
-                            g = float(np.hypot(*(pb - pa)))
-                            if g > 2.5 * gap or not loose(chains[j], lj): continue
-                            if g > gap:                          # a longer gap only where a word was written over the wire
-                                m = (pa + pb) / 2
-                                if not any(b[0] <= m[0] <= b[2] and b[1] <= m[1] <= b[3] for b in word_boxes): continue
-                            # close by, the wire may bend sharply; across a longer gap (where a word
-                            # was drawn over the wire) it must carry straight on
-                            if g <= gap and not (bi and bj): continue   # sharp bends only between curved runs
-                            cm = cos_max if g <= gap else math.cos(math.radians(25.0))
-                            if np.dot(da, -db) < cm: continue
-                            if g > 0.3 and np.dot((pb - pa) / g, da) < cm: continue
-                            if best is None or g < best[0]: best = (g, i, li, j, lj)
-            if best:
-                _, i, li, j, lj = best
-                a = chains[i] if li else [q[::-1] for q in chains[i][::-1]]       # ends at the joint
-                b = chains[j] if not lj else [q[::-1] for q in chains[j][::-1]]   # starts at the joint
-                chains[i] = a + b; del chains[j]; changed = True
+            for i, (bi, ends_i, lo_i) in enumerate(infos):
+                for li in (0, 1):
+                    if not lo_i[li]: continue
+                    pa, da = ends_i[li]
+                    gx, gy = int(pa[0] // reach), int(pa[1] // reach)
+                    for cx in (gx - 1, gx, gx + 1):
+                        for cy in (gy - 1, gy, gy + 1):
+                            for j, lj in grid.get((cx, cy), ()):
+                                if j <= i: continue
+                                bj = infos[j][0]; pb, db = infos[j][1][lj]
+                                g = float(np.hypot(*(pb - pa)))
+                                if g > reach: continue
+                                if g > gap:                          # a longer gap only where a word was written over the wire
+                                    m = (pa + pb) / 2
+                                    if not any(b[0] <= m[0] <= b[2] and b[1] <= m[1] <= b[3] for b in word_boxes): continue
+                                # close by, the wire may bend sharply; across a longer gap (where a word
+                                # was drawn over the wire) it must carry straight on
+                                if g <= gap and not (bi and bj): continue   # sharp bends only between curved runs
+                                cm = cos_max if g <= gap else math.cos(math.radians(25.0))
+                                if np.dot(da, -db) < cm: continue
+                                if g > 0.3 and np.dot((pb - pa) / g, da) < cm: continue
+                                if best is None or (g, i, li, j, lj) < best: best = (g, i, li, j, lj)
+            if not best: break
+            _, i, li, j, lj = best
+            a = chains[i] if li else [q[::-1] for q in chains[i][::-1]]       # ends at the joint
+            b = chains[j] if not lj else [q[::-1] for q in chains[j][::-1]]   # starts at the joint
+            chains[i] = a + b; del chains[j]; del infos[j]; infos[i] = info(chains[i])
         return chains
     def split_at_symbols(chains, r=20.0):
         """A chain that runs on through a symbol is two wires that both end at it."""

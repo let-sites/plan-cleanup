@@ -153,7 +153,14 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     if len(paired) <= 2 * len(have) + 4: paired = set()        # the wall pen has the walls: these are a few wires side by side
     if paired:
         pen_role = role
-        role = lambda p: 'wall' if id(p) in paired else pen_role(p)
+        # one pen for everything: its wires are the curves; long straight lines and closed outlines on it are the
+        # building (exterior faces, fixtures, cabinets, stairs, dimensions), not wiring
+        def _plain(p):
+            if not straight_(p): return False
+            if p.get('closePath') or any(i[0] in ('re', 'qu') for i in p['items']): return True
+            r = p['rect']; return max(r.width, r.height) * K >= 18.0
+        plain = {id(p) for p in elec if id(p) not in paired and _plain(p)}
+        role = lambda p: 'wall' if id(p) in paired else 'misc' if id(p) in plain else pen_role(p)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
     faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening', 'casework') and not is_filled(p)
                           and all(i[0] in ('l', 're', 'qu') for i in p['items'])])

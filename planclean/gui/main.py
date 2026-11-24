@@ -438,6 +438,9 @@ class MainWindow(QMainWindow):
         self.flag_btn = QPushButton('⚑ Flag'); self.flag_btn.setToolTip('Mark something to fix later in CAD (F): click the spot, then type what. '
                                                                        'It goes in the numbered CHECK list in the DWG, which never prints')
         self.flag_btn.clicked.connect(self.start_place_flag); row.addWidget(self.flag_btn)
+        for b in (self.sym_btn, self.note_btn, self.flag_btn): b.setCheckable(True)
+        self.view.modeChanged.connect(lambda m: [b.setChecked(m == 'place' and getattr(self, '_placing', '') == k)
+                                                 for k, b in (('symbol', self.sym_btn), ('note', self.note_btn), ('flag', self.flag_btn))])
         self.heights_btn = QPushButton('Ceiling heights from another sheet…')
         self.heights_btn.setToolTip('Copy the ceiling heights from the floor plan sheet, lined up by the room names')
         self.heights_btn.clicked.connect(self.heights_from_sheet); row.addWidget(self.heights_btn); v.addLayout(row)
@@ -1236,8 +1239,10 @@ class MainWindow(QMainWindow):
 
     def start_place_symbol(self):
         if not self.result: return
-        self._placing = 'symbol'; self.view.set_mode('place')
-        self.statusBar().showMessage('Click the centre of the symbol it missed. Esc to cancel.')
+        if self.view.mode == 'place' and getattr(self, '_placing', '') == 'symbol':     # clicked again: cancel
+            self.view.set_mode('review'); self.statusBar().clearMessage(); return
+        self._placing = 'symbol'; self.view.set_mode('place', Qt.CrossCursor)
+        self.statusBar().showMessage('Adding a symbol: click the centre of the one it missed. Esc to cancel.')
 
     def place_symbol(self, p):
         self.view.set_mode('review')
@@ -1295,7 +1300,9 @@ class MainWindow(QMainWindow):
 
     def start_place_note(self):
         if not self.result: return
-        self._placing = 'note'; self.view.set_mode('place'); self.statusBar().showMessage('Click on the plan where the note goes. Esc to cancel.')
+        if self.view.mode == 'place' and getattr(self, '_placing', '') == 'note':     # clicked again: cancel
+            self.view.set_mode('review'); self.statusBar().clearMessage(); return
+        self._placing = 'note'; self.view.set_mode('place', Qt.IBeamCursor); self.statusBar().showMessage('Adding a note: click on the plan where it goes. Esc to cancel.')
 
     def place_note(self, p):
         self.view.set_mode('review')
@@ -1309,7 +1316,9 @@ class MainWindow(QMainWindow):
 
     def start_place_flag(self):
         if not self.result: return
-        self._placing = 'flag'; self.view.set_mode('place'); self.statusBar().showMessage('Click the spot to flag. Esc to cancel.')
+        if self.view.mode == 'place' and getattr(self, '_placing', '') == 'flag':     # clicked again: cancel
+            self.view.set_mode('review'); self.statusBar().clearMessage(); return
+        self._placing = 'flag'; self.view.set_mode('place', self.view.flag_cursor()); self.statusBar().showMessage('Adding a flag: click the spot on the plan. Esc to cancel.')
 
     def place_flag(self, p):
         """A flag: something to fix by hand in CAD later. It isn't drawn on the plan; it goes in the CHECK list."""

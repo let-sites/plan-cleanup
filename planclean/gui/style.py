@@ -20,6 +20,7 @@ QDockWidget > QWidget, QTabWidget::pane {{ background: white; border: none; }}
 QTabWidget > QWidget {{ background: white; }}
 QPushButton {{ background: #f1f3f5; border: 1px solid {LINE}; border-radius: 6px; padding: 7px 14px; }}
 QPushButton:hover {{ background: #e8ebee; }}
+QPushButton:checked {{ background: #d6eaf4; border: 1px solid #4a90b8; color: #1f5f80; font-weight: 600; }}
 QPushButton[kind="primary"] {{ background: {BLUE}; color: {BLUE_TEXT}; border: none; font-weight: 600; padding: 9px 18px; }}
 QPushButton[kind="primary"]:hover {{ background: {BLUE_HOVER}; }}
 QPushButton[kind="primary"]:disabled {{ background: #cfe4ee; color: #7f97a6; }}

@@ -20,6 +20,7 @@ class SheetView(QGraphicsView):
     symbolMoved = Signal(object, QPointF)    # a symbol dragged in the review: how far, in view units
     exampleSized = Signal(str, float, float) # a taught symbol's box edge dragged: new half width and height, in view units
     itemPicked = Signal(object)
+    modeChanged = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -44,11 +45,21 @@ class SheetView(QGraphicsView):
         self.scene_.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self.page_item, Qt.KeepAspectRatio)
 
-    def set_mode(self, mode):
+    def set_mode(self, mode, cursor=None):
+        """cursor: for 'place' (one click to drop a symbol, note or flag), shown everywhere straight away,
+        not just over the plan, so it's clear what the next click does. Back to normal on the click or Esc."""
+        from PySide6.QtWidgets import QApplication
         self.mode = mode
         # on the cleaned plan, dragging empty space moves the page; clicking a symbol selects it
         self.setDragMode(QGraphicsView.ScrollHandDrag if mode in ('pan', 'review') else QGraphicsView.NoDrag)
-        self.viewport().setCursor(Qt.CrossCursor if mode in ('box', 'teach', 'place') else Qt.OpenHandCursor)
+        cur = cursor if (mode == 'place' and cursor is not None) else (Qt.CrossCursor if mode in ('box', 'teach', 'place') else Qt.OpenHandCursor)
+        self.viewport().setCursor(cur)
+        if mode == 'place':
+            if getattr(self, '_override', False): QApplication.changeOverrideCursor(cur)
+            else: QApplication.setOverrideCursor(cur); self._override = True
+        elif getattr(self, '_override', False):
+            QApplication.restoreOverrideCursor(); self._override = False
+        self.modeChanged.emit(mode)
 
     def _zoom_buttons(self):
         from PySide6.QtWidgets import QWidget, QHBoxLayout, QToolButton
@@ -228,6 +239,18 @@ class SheetView(QGraphicsView):
             self.done_items.append(t)
 
     @staticmethod
+    @staticmethod
+    def flag_cursor():
+        """A little orange flag; the click point is the foot of its pole."""
+        from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QCursor, QPolygonF
+        from PySide6.QtCore import QPointF
+        pm = QPixmap(32, 32); pm.fill(Qt.transparent); p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+        for col, w in (('white', 4.5), ('#1f2a33', 2)):
+            p.setPen(QPen(QColor(col), w, Qt.SolidLine, Qt.RoundCap)); p.drawLine(QPointF(4, 30), QPointF(4, 3))
+        flag = QPolygonF([QPointF(5, 3), QPointF(25, 9), QPointF(5, 16)])
+        p.setPen(QPen(QColor('white'), 1.5)); p.setBrush(QColor('#e07000')); p.drawPolygon(flag); p.end()
+        return QCursor(pm, 4, 30)
+
     def _side_cursor(side):
         return {'x': Qt.SizeHorCursor, 'y': Qt.SizeVerCursor}.get(side, Qt.SizeFDiagCursor)
 

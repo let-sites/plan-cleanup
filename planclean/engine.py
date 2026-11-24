@@ -36,6 +36,9 @@ def guess_roles(paths, electrical_pens=()):
 
 TITLE_H = 9.0          # inches: the sheet title's text height (Settings.text_height_title)
 
+# a dimension or centre-line mark the builder typed (2'-6", (TYP.), CL): not a note
+DIMENSION = re.compile(r"\d+'(-? ?\d+( \d/\d)?)?|\(TYP\.?\)|C/?L")
+
 def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: None) -> Result:
     K = profile.inches_per_pt
     x0, y0 = region[0], region[1]
@@ -105,6 +108,11 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if not any(ocr._overlap(w['bb'], t['bb']) > 0.4 for t in titles):
                 titles.append(w)
         titles = [w for w in titles if title_quality(w) >= 1.2]          # mostly real words, read with some confidence
+    # a typed sheet title ('1 1ST LEVEL ELECTRICAL PLAN'): exact already
+    for w in [w for w in words if w.get('typed') and re.search(r'\bPLAN\b', w['n']) and re.search(r'ELEC|LIGHTING|POWER|LEVEL|FLOOR', w['n'])]:
+        words.remove(w)
+        if not any(ocr._overlap(w['bb'], t['bb']) > 0.4 for t in titles):
+            w = dict(w); w['n'] = re.sub(r'^\d{1,2} +', '', w['n']); titles.append(w)     # less the detail number in front
 
     # 3. walls (for turning symbols and telling wall lights from ceiling lights)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
@@ -227,13 +235,14 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if near:
                 h = min(near, key=lambda h: math.hypot(h['x'] - w['cx'], h['y'] - w['cy']))
                 ratings.setdefault(id(h), []).append(w); continue
-        if re.fullmatch(r"[&$S ]+", n) or any(p.match(n.replace(' ', '')) or p.match(n) for p in drops):
+        if re.fullmatch(r"[&$S\d ]+", n) or DIMENSION.fullmatch(n) or any(p.match(n.replace(' ', '')) or p.match(n) for p in drops):
             res.dropped_labels.append(n); continue
-        m = difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.7)
-        if not m and len(n) >= 4:       # a misread ending ('TANG' for TANDEM) is fine when the start is right
-            m = [k for k in difflib.get_close_matches(n, list(profile.room_names), n=1, cutoff=0.6) if k[:3] == n[:3]]
+        opt = re.match(r'OPT\.? +', n); rn = n[opt.end():] if opt else n      # 'OPT. DEN': an optional room
+        m = difflib.get_close_matches(rn, list(profile.room_names), n=1, cutoff=0.7)
+        if not m and len(rn) >= 4:       # a misread ending ('TANG' for TANDEM) is fine when the start is right
+            m = [k for k in difflib.get_close_matches(rn, list(profile.room_names), n=1, cutoff=0.6) if k[:3] == rn[:3]]
         if m and w['size'] >= profile.room_text_min_size - 0.5:     # the text reader's box height wobbles a little
-            w['room'] = profile.room_names[m[0]]; rooms.append(w)
+            w['room'] = ('OPT. ' if opt else '') + profile.room_names[m[0]]; rooms.append(w)
         else:
             # short labels next to a symbol (WP, GFI, GF, 220, Q, 3(T)...) describe the builder's symbol: drop them
             short = len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 5
@@ -699,6 +708,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             return f'SCALE: {a}/{b}" = 1\'-0"'                  # 'SCALE I/4 I-O' -> SCALE: 1/4" = 1'-0"
         lines = [scale(rating_text(ln) if re.search(r'2[24]0 ?[VY]', ln) else ln) for ln in lines]
         lines = [re.sub(r'\((I|L|l)\)', '(1)', ' '.join(fix_word(t) for t in ln.split())) for ln in lines]   # '(I)' is (1)
+        lines = [ln for ln in lines if ln.strip()]
+        if not lines: continue
         res.texts.append(Text('note', lines, X, Y, review='Builder note kept: check it' if w['score'] < 0.7 else ''))
     # a note written level over a symbol (a rating the builder wrote sideways along a wall): move it clear
     NOTE_H = 3.0                                             # inches, about the usual note height

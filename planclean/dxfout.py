@@ -147,8 +147,10 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
     def block_of(s):
         n = block_for(s.cls); return out.blocks.get(n) if n else None
     wire_lines, wire_arcs = retarget_wires(res, block_of)
+    def layer_of(role):          # the wires go with the symbols, on your symbol layer ($Standard)
+        return symbol_layer if role == 'wiring' else ROLE_LAYER.get(role, 'BASE-MISC')
     for role, pts, filled in wire_lines:
-        lay = ROLE_LAYER.get(role, 'BASE-MISC')
+        lay = layer_of(role)
         if len(pts) == 2:
             msp.add_line(pts[0], pts[1], dxfattribs={'layer': lay})
         elif len(pts) > 2:
@@ -156,7 +158,7 @@ def write_dxf(res: Result, path, library_doc, block_for, text_room=3.0, text_not
             if filled:
                 h = msp.add_hatch(color=7, dxfattribs={'layer': lay}); h.paths.add_polyline_path(pts, is_closed=True)
     for role, cx, cy, r, a0, a1 in wire_arcs:
-        msp.add_arc((cx, cy), r, a0, a1, dxfattribs={'layer': ROLE_LAYER.get(role, 'BASE-MISC')})
+        msp.add_arc((cx, cy), r, a0, a1, dxfattribs={'layer': layer_of(role)})
     missing = set()
     for s in res.symbols:
         if s.cls == 'remove': continue

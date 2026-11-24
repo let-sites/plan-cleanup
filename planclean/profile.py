@@ -17,6 +17,8 @@ DEFAULT_ROOMS = {
     "M. BATH": "MAIN BATH", "MAIN BATH": "MAIN BATH", "BATH": "BATH", "BATH 2": "BATH 2", "BATH 3": "BATH 3",
     "W.I.C.": "W.I.C.", "LAUNDRY": "LAUNDRY", "UTILITY": "UTILITY", "LOFT": "LOFT", "GAMEROOM": "GAME ROOM",
     "MECH.": "MECH.", "REC ROOM": "REC ROOM", "STORAGE": "STORAGE",
+    "GATHERING ROOM": "GATHERING ROOM", "GATHERING": "GATHERING ROOM", "CAFE": "CAFE", "OWNER'S BATH": "OWNER'S BATH",
+    "OWNER'S BEDROOM": "OWNER'S BEDROOM", "DINING ROOM": "DINING", "BREAKFAST": "BREAKFAST", "LIBRARY": "LIBRARY",
 }
 DEFAULT_DROP = [r"^GFI$", r"^WP/?GFI$", r"^WP$", r"^DISK$", r"^220V?$", r"^CLG\.?$", r"^PENDANTS?$",
                 r"^CO/SD\.?$", r"^SD/CO\.?$", r"^SD$", r"^\d{4} ?SR[O0]$", r"^E-?PANEL$", r"^EMER\.?$", r"^DISCONNECT$"]
@@ -68,6 +70,7 @@ class Profile:
         d['symbols'] = [SymbolExample(**{k: v for k, v in s.items() if k in SymbolExample.__dataclass_fields__}) for s in d.get('symbols', [])]
         for ex in d['symbols']:
             if ex.cls == 'jbox': ex.cls = 'ceiling_light'     # the J-box type was retired
+        if isinstance(d.get('room_names'), dict): d['room_names'] = {**DEFAULT_ROOMS, **d['room_names']}   # rooms added since it was made
         p = Profile(**{k: v for k, v in d.items() if k in Profile.__dataclass_fields__})
         return p
 

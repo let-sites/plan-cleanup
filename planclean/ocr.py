@@ -96,6 +96,7 @@ def typed_words(lines, page_rotation=0):
     """Typed PDF text as words, the same shape the text reader gives (exact, so no reading needed)."""
     out = []
     for l in lines:
+        if not norm(l['text']): continue
         bb = l['bbox']
         q = np.array([_disp(x, y, page_rotation) for x, y in ((bb[0], bb[1]), (bb[2], bb[3]))])
         dbb = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())

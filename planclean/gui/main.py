@@ -237,7 +237,9 @@ class MainWindow(QMainWindow):
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
         row = QHBoxLayout(); row.addWidget(QLabel('This area is'))
-        self.area_type = QComboBox(); self.area_type.addItems(['Electrical plan', 'Option']); row.addWidget(self.area_type, 1); v.addLayout(row)
+        self.area_type = QComboBox(); self.area_type.addItems(['Electrical plan', 'Option']); row.addWidget(self.area_type, 1)
+        row.addWidget(QLabel('for')); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
+                     'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 1); v.addLayout(row)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area, or click <b>Save drawing</b> at the top.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
@@ -343,7 +345,7 @@ class MainWindow(QMainWindow):
         self.items.clear()
         if not self.plan: self.save_btn.setEnabled(self.result is not None); return
         for i, it in enumerate(self.plan.items):
-            typ = '' if it.area_type == 'Electrical plan' else f' ({it.area_type})'
+            typ = f' ({it.area_type})' if it.area_type != 'Electrical plan' else f' ({it.elevation})' if it.elevation else ''
             w = QListWidgetItem(f'{i + 1}. {it.label}{typ}'); w.setSizeHint(QSize(160, 30)); self.items.addItem(w)
         self.tpl_lbl.setText(f'Template: {Path(self.plan.template).name}' if self.plan.template else 'Template: none (blank drawing)')
         self.save_btn.setEnabled(True)
@@ -361,11 +363,12 @@ class MainWindow(QMainWindow):
                                     sorted({sh.path for sh in self.sheets}))
         if self.editing is not None and self.editing < len(self.plan.items):
             self.plan.replace(self.editing, self.result, self.region); n = self.editing
-            self.plan.items[n].area_type = self.area_type.currentText(); self.plan.save()
+            self.plan.items[n].area_type = self.area_type.currentText(); self.plan.items[n].elevation = self.elev_cb.currentData() or ''; self.plan.save()
             msg = f'Updated area {n + 1} in the plan.'
         else:
             lab = getattr(self.sheet, 'label', self.sheet.title)
-            self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab, self.area_type.currentText())
+            self.plan.add(self.result, self.sheet.path, getattr(self.sheet, 'index', 0), self.sheet.kind, self.region, lab, self.area_type.currentText(),
+                          self.elev_cb.currentData() or '')
             msg = f'Added to the plan ({len(self.plan.items)} area{"s" if len(self.plan.items) != 1 else ""}). Box the next area, or Save drawing.'
         self.editing = None; self.fill_items(); self.redraw_box(); self.statusBar().showMessage(msg, 8000)
 
@@ -606,6 +609,32 @@ class MainWindow(QMainWindow):
         if self.editing is not None and self.plan: guess = self.plan.items[self.editing].area_type
         else: guess = 'Option' if any(t.kind == 'title' and 'OPT' in ' '.join(t.lines) for t in res.texts) else 'Electrical plan'
         if self.area_type.findText(guess) >= 0: self.area_type.setCurrentText(guess)
+        self.elev_cb.clear(); self.elev_cb.addItem('first free elevation', '')
+        for n in (self.plan.elevations if self.plan else []): self.elev_cb.addItem(n, n)
+        if self.editing is not None and self.plan: ev = self.plan.items[self.editing].elevation
+        else: ev = self.guess_elevation(res)
+        i = self.elev_cb.findData(ev); self.elev_cb.setCurrentIndex(max(i, 0))
+
+    def guess_elevation(self, res):
+        """An elevation name written inside the box (e.g. 'ELEVATION B - MODERN') picks the elevation."""
+        if not self.plan: return ''
+        words = ' ' + ' '.join(' '.join(t.lines) for t in res.texts).upper() + ' '
+        import re, difflib
+        for n in self.plan.elevations:
+            if re.search(r'\b' + re.escape(n.upper()) + r'\b', words): return n
+        toks = re.findall(r'[A-Z]{4,}', words)
+        for n in self.plan.elevations:
+            if any(difflib.SequenceMatcher(None, n.upper(), t).ratio() >= 0.8 for t in toks): return n
+        # a name you haven't typed yet: 'ELEVATION A - MODERN' adds Modern to the plan's elevations
+        m = None
+        for ln in (l.upper().strip() for t in res.texts for l in t.lines):
+            m = re.search(r'ELEV(?:ATION)?\.?\s+[A-Z0-9]?\s*[-–:]\s*([A-Z][A-Z ]{2,})$', ln)
+            if m: break
+        if m and len(self.plan.elevations) < 3:
+            n = m.group(1).strip().title()
+            if n.upper() not in ('PLAN', 'ELECTRICAL', 'ELECTRICAL PLAN'):
+                self.plan.elevations.append(n); self.plan.save(); self.elev_cb.addItem(n, n); return n
+        return ''
         self.save_btn.setEnabled(True)
         if self.view.region_item is not None: self.view.fitInView(self.view.region_item, Qt.KeepAspectRatio)
 
@@ -860,7 +889,7 @@ class MainWindow(QMainWindow):
         if base is not None:
             board = find_board(base)
             if board:
-                plans = [r for r, it in zip(results, self.plan.items) if it.area_type != 'Option']
+                plans = [(r, it.elevation) for r, it in zip(results, self.plan.items) if it.area_type != 'Option']
                 opts = [r for r, it in zip(results, self.plan.items) if it.area_type == 'Option']
                 res, spill = on_board(board, plans, opts, self.settings.text_height_title, self.plan.project, self.plan.name, self.plan.elevations)
                 if spill:      # more plans than boxes: they go above the board

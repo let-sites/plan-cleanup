@@ -23,6 +23,7 @@ class PlanItem:
     region: tuple              # the box, in source units
     result_file: str           # pickled Result, inside the plan folder
     area_type: str = 'Electrical plan'
+    elevation: str = ''          # which elevation's box it goes in on the template ('' = the first free one)
     added: float = 0.0
 
 
@@ -87,9 +88,9 @@ class Plan:
         with open(Path(self.folder) / name, 'wb') as fh: pickle.dump(r, fh)
         return name
 
-    def add(self, res, file, page, kind, region, label, area_type='Electrical plan'):
+    def add(self, res, file, page, kind, region, label, area_type='Electrical plan', elevation=''):
         it = PlanItem(label=label, file=file, page=page, kind=kind, region=tuple(region), result_file=self._store(res),
-                      area_type=area_type, added=time.time())
+                      area_type=area_type, elevation=elevation, added=time.time())
         self.items.append(it); self.save(); return it
 
     def replace(self, i, res, region=None):
@@ -224,9 +225,22 @@ def on_board(board, plan_results, option_results, title_h=9.0, project='', plan_
     options packed into the OPTIONS box, left to right, top to bottom. Labels filled in."""
     out = Result(); spill = []
     cols = board['columns']
-    for k, res in enumerate(plan_results):
+    # plan_results: results, or (result, elevation name) pairs; a named elevation takes its own box
+    pairs = [p if isinstance(p, tuple) else (p, '') for p in plan_results]
+    names = [n.strip().upper() for n in elevations]
+    taken, where = set(), []
+    for res, ev in pairs:
+        k = names.index(ev.strip().upper()) if ev.strip() and ev.strip().upper() in names else None
+        if k is not None and k < len(cols) and k not in taken: taken.add(k)
+        else: k = None
+        where.append(k)
+    for i, k in enumerate(where):
+        if k is None:
+            free = [c for c in range(len(cols)) if c not in taken]
+            if free: where[i] = free[0]; taken.add(free[0])
+    for (res, _), k in zip(pairs, where):
         texts = sheet_layout(res, title_h); x0, y0, x1, y1 = _extent(res, texts)
-        if k < len(cols):
+        if k is not None:
             cx0, cy0, cx1, cy1 = cols[k][0]
             _place(out, res, texts, (cx0 + cx1) / 2 - (x0 + x1) / 2, (cy0 + cy1) / 2 - (y0 + y1) / 2)
         else: spill.append(res)

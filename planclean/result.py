@@ -15,6 +15,7 @@ class Sym:
     review: str = ""         # why a person should look at it ('' = fine)
     src: tuple = ()          # where it came from on the source sheet (page points)
     wall: float | None = None   # distance from the centre back to the wall it sits on (drawing units)
+    turn: float = 0.0        # extra turn a person gave it in the review, degrees (symbols that don't sit on a wall)
     shape: str = ""          # the type its drawing matched, before a note or a wall changed it ('' = same / unknown)
 
 @dataclass

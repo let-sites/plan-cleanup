@@ -8,11 +8,11 @@ from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySe
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView, QProgressBar)
+    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView, QProgressBar, QToolButton, QToolTip)
 
 from planclean import __version__
 from planclean.profile import Profile, Settings, safe_name
-from planclean.symbols import SYMBOL_TYPES, PEN_ROLES, label as sym_label
+from planclean.symbols import SYMBOL_TYPES, PEN_ROLES, ORIENTED, label as sym_label
 from planclean.engine import clean_pdf, pens_in, guess_roles
 from planclean.teach import Teacher
 from planclean.vec import in_region, pen_key
@@ -22,6 +22,24 @@ from planclean.jobs import CleanJob, attach_to_page
 from planclean.plan import Plan, combine, reattach, find_board, on_board, LEVELS, level_rank
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
+
+MAX_HALF = 60.0      # biggest taught-symbol box, half its width in sheet points (a fan with blades fits)
+TEACH_HELP = ('<b>Teaching symbols</b><br>'
+              '• Click a symbol on the plan, then pick what it is. One of each kind is enough.<br>'
+              '• Green boxes are symbols you\'ve taught. Drag one to centre it, drag its edge to resize it, '
+              'or click it and press Delete.<br>'
+              '• Click a symbol in the list to find it on the plan.<br>'
+              '• Click a line type to highlight it on the plan, and set what it is.<br>'
+              '• Esc lets go of a selection.')
+
+def _trash_icon():
+    from PySide6.QtGui import QPainter, QPen
+    pm = QPixmap(36, 36); pm.fill(Qt.transparent); p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor('#6b7a86'), 2.4); pen.setCapStyle(Qt.RoundCap); p.setPen(pen)
+    p.drawLine(8, 10, 28, 10); p.drawLine(15, 10, 15, 6); p.drawLine(15, 6, 21, 6); p.drawLine(21, 6, 21, 10)
+    p.drawLine(10, 10, 12, 30); p.drawLine(12, 30, 24, 30); p.drawLine(24, 30, 26, 10)
+    p.drawLine(15, 14, 15.5, 26); p.drawLine(21, 14, 20.5, 26); p.end()
+    return QIcon(pm)
 from .sources import PdfSheet, DwgSheet
 from .start import StartDialog, _big, DropOverlay, _plan_url, _plan_urls, BuilderSettingsDialog, OpenPlanDialog, BuildersPage, edit_builder_settings
 THUMB_W = 200
@@ -305,10 +323,15 @@ class MainWindow(QMainWindow):
     def _tab_setup(self):
         w = QWidget(); v = QVBoxLayout(w)
         row = QHBoxLayout(); back = QPushButton('← Back'); back.setToolTip('Leave teaching and go back to where you were')
-        back.clicked.connect(self.close_teach); row.addWidget(back); row.addStretch(); v.addLayout(row)
-        v.addWidget(self._step(0, 'Teach this builder\'s symbols', 'Show the app what this builder\'s symbols look like: '
-                               'with the crosshair, click one of each kind of symbol on the plan and say what it is. '
-                               'You only do this once per builder. Click <b>← Back</b> any time to leave.'))
+        back.setStyleSheet('QPushButton{border:1px solid #c9d3db;border-radius:10px;padding:2px 10px;background:white;font-size:12px;color:#4b5a66}'
+                           'QPushButton:hover{background:#eef4f8}')
+        back.clicked.connect(self.close_teach); row.addWidget(back); row.addStretch()
+        helpb = QToolButton(); helpb.setText('?'); helpb.setFixedSize(22, 22); helpb.setToolTip(TEACH_HELP)
+        helpb.setStyleSheet('QToolButton{border:1px solid #c9d3db;border-radius:11px;background:white;color:#4a90b8;font-weight:700;font-size:12px}'
+                            'QToolButton:hover{background:#eef4f8}')
+        helpb.clicked.connect(lambda: QToolTip.showText(helpb.mapToGlobal(helpb.rect().bottomLeft()), TEACH_HELP, helpb))
+        row.addWidget(helpb); v.addLayout(row)
+        t = QLabel('Teach this builder\'s symbols'); t.setStyleSheet('font-size:18px;font-weight:700;margin:2px 0 4px 0'); v.addWidget(t)
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
         self.scale_cb.currentIndexChanged.connect(self.on_scale); row.addWidget(self.scale_cb); v.addLayout(row)
         self.roles_lbl = QLabel('Line types on this plan'); v.addWidget(self.roles_lbl)
@@ -324,17 +347,12 @@ class MainWindow(QMainWindow):
         self.examples.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); self.examples.verticalHeader().hide()
         self.examples.setSelectionBehavior(QTableWidget.SelectRows)
         self.examples.setIconSize(QPixmap(56, 56).size()); v.addWidget(self.examples, 2)
+        self.examples.cellClicked.connect(self.goto_example)
         self.examples.itemSelectionChanged.connect(lambda: self.view.select_ex_marker(
             self.examples.item(self.examples.currentRow(), 0).data(Qt.UserRole) if self.examples.currentRow() >= 0 and self.examples.item(self.examples.currentRow(), 0) else None))
         a = QAction(self.examples); a.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
         a.setShortcutContext(Qt.WidgetShortcut); a.triggered.connect(self.remove_example); self.examples.addAction(a)
-        hint = QLabel('Symbols you\'ve taught show on the plan as green boxes. Hover one for the hand, then <b>drag</b> it to centre it, '
-                      'drag its <b>edge</b> to make the box bigger or smaller (or click it and press + / −), or click it and press <b>Delete</b>. '
-                      'Click any symbol on the plan (crosshair) to teach a new one.'); hint.setWordWrap(True); hint.setProperty('kind', 'muted'); v.addWidget(hint)
-        row = QHBoxLayout()
         self.teach_btn = QPushButton('Click a symbol to teach it'); self.teach_btn.clicked.connect(self.start_teach); self.teach_btn.hide()
-        b = QPushButton('Delete selected'); b.clicked.connect(lambda: self.remove_example()); row.addWidget(b); v.addLayout(row)
-        b = QPushButton('Builder settings (what to show)…'); b.clicked.connect(self.builder_settings); v.addWidget(b)
         b = _big('Done: save and clean the area', primary=True); b.clicked.connect(self.save_and_clean); v.addWidget(b)
         return w
 
@@ -372,6 +390,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
         self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1)
         b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
+        b = QPushButton('⟳ Rotate'); b.setToolTip('Turn the selected symbol 90° (R; Shift+R turns it the other way)')
+        b.clicked.connect(lambda: self.rotate_sel(1)); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
         row = QHBoxLayout(); row.addWidget(QLabel('This area is'))
         self.area_type = QComboBox(); self.area_type.addItems(AREA_TYPES); row.addWidget(self.area_type, 1)
@@ -667,7 +687,7 @@ class MainWindow(QMainWindow):
         it = QTableWidgetItem(); it.setIcon(self._example_icon(ex)); it.setData(Qt.UserRole, ex.id); self.examples.setItem(r, 0, it)
         self.examples.setRowHeight(r, 60)
         btns = QWidget(); h = QHBoxLayout(btns); h.setContentsMargins(2, 2, 2, 2); h.setSpacing(4)
-        x = QPushButton('×'); x.setFixedWidth(30); x.setToolTip('Delete this example'); x.clicked.connect(lambda _=False, e=ex: self.remove_example(e)); h.addWidget(x)
+        x = QToolButton(); x.setIcon(_trash_icon()); x.setIconSize(QSize(18, 18)); x.setAutoRaise(True); x.setToolTip('Delete this example'); x.clicked.connect(lambda _=False, e=ex: self.remove_example(e)); h.addWidget(x)
         self.examples.setCellWidget(r, 2, btns); self.examples.resizeColumnToContents(2)
         cb = QComboBox(); keys = list(SYMBOL_TYPES); cb.addItems([SYMBOL_TYPES[k][0] for k in keys]); cb.setCurrentIndex(keys.index(ex.cls) if ex.cls in keys else 0)
         cb.currentIndexChanged.connect(lambda i, e=ex: (setattr(e, 'cls', keys[i]), self._save_quietly())); self.examples.setCellWidget(r, 1, cb)
@@ -709,6 +729,8 @@ class MainWindow(QMainWindow):
             ex = self._example(self._picked_ex); self._picked_ex = None
             if ex: self.remove_example(ex)
             return
+        if e.key() == Qt.Key_R and self.tabs.currentIndex() == 2 and hasattr(getattr(self, '_sel', None), 'cls'):
+            self.rotate_sel(-1 if e.modifiers() & Qt.ShiftModifier else 1); return
         if e.key() == Qt.Key_Escape:
             if self.roles.selectedItems(): self.roles.clearSelection(); return
             if getattr(self, '_picked_ex', None): self._picked_ex = None; self.view.select_ex_marker(None); self.examples.clearSelection(); return
@@ -761,6 +783,21 @@ class MainWindow(QMainWindow):
             if self.examples.item(r, 0) and self.examples.item(r, 0).data(Qt.UserRole) == eid: return r
         return -1
 
+    def goto_example(self, row, _col=None):
+        """Clicking a taught symbol in the list: show it on the plan and select it, ready to adjust."""
+        it = self.examples.item(row, 0)
+        ex = self._example(it.data(Qt.UserRole)) if it else None
+        if ex is None: return
+        m = self.view.ex_markers.get(ex.id)
+        if m is None:
+            w = getattr(ex, 'where', None) or []
+            where = f'{Path(w[0]).name}, page {w[1] + 1}' if len(w) >= 4 else 'a plan from before the app kept track'
+            self.statusBar().showMessage(f'This one was taught on {where}, so it isn\'t on this sheet.', 6000); return
+        h = max(m.rect().width() / 2, 4.0); c = m.pos()
+        self.view.fitInView(QRectF(c.x() - 10 * h, c.y() - 7 * h, 20 * h, 14 * h), Qt.KeepAspectRatio)
+        self.view.select_ex_marker(ex.id); self._picked_ex = ex.id
+        self.statusBar().showMessage('Selected. Drag it to centre it, drag its edge to resize, Delete to remove it, Esc to let go.')
+
     def remove_example(self, ex=None):
         if not self.profile: return
         ids = [ex.id] if ex is not None and hasattr(ex, 'id') else [self.examples.item(r, 0).data(Qt.UserRole)
@@ -810,7 +847,7 @@ class MainWindow(QMainWindow):
     def example_resized(self, eid, step):
         old = self._example(eid)
         if old is None or not self.region or len(getattr(old, 'where', []) or []) < 4: return
-        half = min(30.0, max(3.0, old.half + 0.75 * step))
+        half = min(MAX_HALF, max(3.0, old.half + 0.75 * step))
         self._replace_example(old, old.where[2], old.where[3], half)
         self.statusBar().showMessage(f'Box {"bigger" if step > 0 else "smaller"}, saved.', 3000)
 
@@ -820,7 +857,7 @@ class MainWindow(QMainWindow):
         x, y = old.where[2], old.where[3]
         (vx, vy), (vx2, vy2) = self.sheet.to_view(x, y), self.sheet.to_view(x + 1, y)
         per = math.hypot(vx2 - vx, vy2 - vy) or 1.0
-        half = min(30.0, max(3.0, half_view / per))
+        half = min(MAX_HALF, max(3.0, half_view / per))
         self._replace_example(old, x, y, half); self.view.select_ex_marker(eid); self._picked_ex = eid
         self.statusBar().showMessage('Box resized and saved.', 3000)
 
@@ -1119,6 +1156,28 @@ class MainWindow(QMainWindow):
             self.result.texts.remove(s)
             if s.kind == 'note': self._learn_drop(s)
         self._sel = None; self._after_review_change()
+
+    def rotate_sel(self, step=1):
+        """Turn the selected symbol a quarter turn (step 1 clockwise, -1 the other way)."""
+        s = getattr(self, '_sel', None)
+        if s is None or not hasattr(s, 'cls'): self.statusBar().showMessage('Click a symbol first, then rotate it.', 3000); return
+        self._snap()
+        before = (round(s.dx, 3), round(s.dy, 3), getattr(s, 'turn', 0.0))
+        if s.cls in ORIENTED:
+            s.dx, s.dy = (s.dy, -s.dx) if step > 0 else (-s.dy, s.dx)
+        else:
+            s.turn = ((getattr(s, 'turn', 0.0) or 0.0) - 90.0 * step) % 360
+        s.review = ''
+        try:      # kept so the automatic turning can be checked against what people fix
+            from planclean.profile import config_dir
+            import json as _json, time as _time
+            with open(config_dir() / 'rotations.log', 'a') as f:
+                f.write(_json.dumps({'t': _time.strftime('%Y-%m-%d %H:%M'), 'builder': self.profile.name if self.profile else '',
+                                     'file': getattr(self.sheet, 'path', ''), 'page': getattr(self.sheet, 'index', 0), 'cls': s.cls,
+                                     'src': list(s.src), 'before': before, 'after': (round(s.dx, 3), round(s.dy, 3), getattr(s, 'turn', 0.0))}) + '\n')
+        except Exception: pass
+        self.draw_result(); self.fill_review(); self.on_pick(s, zoom=False, ask=False)
+        self.statusBar().showMessage('Rotated. Press R again to keep turning, or ⌘Z to undo.', 4000)
 
     def ok_sel(self):
         s = getattr(self, '_sel', None)

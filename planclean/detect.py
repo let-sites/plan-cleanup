@@ -38,8 +38,10 @@ def nearest_anchor(anc, x, y, maxd=8):
 
 def cut_template(img, region, cx, cy, half):
     x0 = int(round((cx - half - region[0]) * S)); y0 = int(round((cy - half - region[1]) * S)); n = int(round(2 * half * S))
-    x0 = max(0, x0); y0 = max(0, y0)
-    return img[y0:y0 + n, x0:x0 + n].copy()
+    out = np.zeros((n, n), dtype=img.dtype)          # stays square and centred, even at the edge of the box
+    sx0, sy0 = max(0, x0), max(0, y0); sx1, sy1 = min(img.shape[1], x0 + n), min(img.shape[0], y0 + n)
+    if sx1 > sx0 and sy1 > sy0: out[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = img[sy0:sy1, sx0:sx1]
+    return out
 
 def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'ceiling_light', 0.06)):
     """Return detections: dicts with cls, score, x, y (page pts), per-class scores."""

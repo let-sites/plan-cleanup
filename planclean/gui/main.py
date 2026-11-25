@@ -78,13 +78,28 @@ class Worker(QObject):
         except Exception: self.failed.emit(traceback.format_exc())
 
 def run_in_thread(parent, fn, on_done, title):
-    dlg = QProgressDialog(title, None, 0, 0, parent); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0); dlg.show()
+    dlg = QProgressDialog(title, 'Cancel', 0, 0, parent); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0); dlg.show()
     th = QThread(parent); w = Worker(fn); w.moveToThread(th)
     th.started.connect(w.run)
     w.progress.connect(dlg.setLabelText)
-    def fin(res): dlg.close(); th.quit(); on_done(res)
-    def err(msg): dlg.close(); th.quit(); QMessageBox.critical(parent, 'Something went wrong', msg[-2000:])
-    w.done.connect(fin); w.failed.connect(err)
+    gone = {'v': False}
+    def cancel():     # the work can't be stopped half way, but its answer is thrown away and you can carry on
+        gone['v'] = True; dlg.close()
+        if hasattr(parent, 'statusBar'): parent.statusBar().showMessage('Cancelled.', 4000)
+    dlg.canceled.connect(cancel)
+    def shut():
+        g = gone['v']
+        try: dlg.canceled.disconnect(cancel)        # closing the dialog itself counts as Cancel otherwise
+        except Exception: pass
+        dlg.close(); th.quit(); return g
+    def fin(res):
+        if not shut(): on_done(res)
+    def err(msg):
+        if not shut(): QMessageBox.critical(parent, 'Something went wrong', msg[-2000:])
+    # A plain function connected to a signal runs on the thread that sends it, here the worker. Closing the
+    # dialog from there locked the app up. Hand the answer to the window's own thread instead.
+    w.done.connect(lambda res: QTimer.singleShot(0, dlg, lambda: fin(res)))
+    w.failed.connect(lambda msg: QTimer.singleShot(0, dlg, lambda: err(msg)))
     parent._threads = getattr(parent, '_threads', []) + [(th, w)]
     th.start()
 

@@ -66,11 +66,18 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     opk = outline_pen(pl, M, dregion[2] - dregion[0])
     walls = [p for p in pl if pen_key(p) == opk]
     wr = [_drect(p, M) for p in walls]
-    X0, X1 = (min(r[0] for r in wr), max(r[2] for r in wr)) if wr else (dregion[0], dregion[2])
     Ybot = max(r[3] for r in wr) if wr else dregion[3]
+    # the building's sides: from the outline's upright parts. The ground line can be drawn with the same pen
+    # and run well past the house (Pulte), out under the dimensions and level marks.
+    top = min(r[1] for r in wr) if wr else dregion[1]
+    tall = [r for r in wr if (r[3] - r[1]) > 0.15 * (Ybot - top)] or wr
+    X0, X1 = (min(r[0] for r in tall), max(r[2] for r in tall)) if wr else (dregion[0], dregion[2])
 
     progress('Reading the notes')
     words = ocr.read_words([p for p in pl if pen_key(p) != opk], region, page.rotation)
+    from .vec import page_text
+    typed = ocr.typed_words(page_text(page, region), page.rotation)     # typed notes and title (Pulte): exact already
+    words = words + typed
     def dbox(w):
         b = w['bb']; r = (pymupdf.Rect(b) * M)
         return (min(r.x0, r.x1), min(r.y0, r.y1), max(r.x0, r.x1), max(r.y0, r.y1))
@@ -94,7 +101,8 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     keep_w = [(t, _grow(b, 1.5)) for (t, b), k in zip(boxes, keep) if k]
     # the title and scale under the building become real text in the drawing (the builder's lettering goes)
     progress('Reading the title')
-    text_lines, scale_ln = _title_lines(page, pl, M, dregion, Ybot)
+    text_lines, scale_ln = _typed_title_lines(typed, M, Ybot) if typed else ([], [])
+    if not text_lines: text_lines, scale_ln = _title_lines(page, pl, M, dregion, Ybot)
     text_boxes = [_grow(b, 1.5) for ln in text_lines for _, b, _ in ln]
     for ln in text_lines:            # the whole line, a little past its ends (a dash the reader skipped: 'ELEVATION -')
         bs = [b for _, b, _ in ln]; h = max(b[3] - b[1] for b in bs)
@@ -131,7 +139,8 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
         return True
     outside = lambda r: r[2] <= X0 + 1.5 or r[0] >= X1 - 1.5
     attached = set()
-    anchor = [rects[i] for i, p in enumerate(pl) if pen_key(p) == opk or (not outside(rects[i]) and structural(i, p))]
+    ground = lambda r: (r[3] - r[1]) < 0.15 * (Ybot - top) and (r[0] < X0 - 8 or r[2] > X1 + 8)   # the ground line run out past the house
+    anchor = [rects[i] for i, p in enumerate(pl) if (pen_key(p) == opk and not ground(rects[i])) or (not outside(rects[i]) and structural(i, p))]
     for _ in range(8):
         new = []
         for i, p in enumerate(pl):
@@ -253,7 +262,8 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
             return re.sub(r'\s*[-–—]\s*$', ' -', ' '.join(toks)).strip()
         tl = [ln for ln in text_lines if ln not in scale_ln]
         if tl:
-            X, Y = centre(tl); res.texts.append(Text('title', [tidy(' '.join(t for t, _, _ in ln)) for ln in tl], X, Y))
+            X, Y = centre(tl); res.texts.append(Text('title', [(' '.join(w['text'] for _, _, w in ln).upper() if ln[0][2].get('typed')
+                                                               else tidy(' '.join(t for t, _, _ in ln))) for ln in tl], X, Y))
         if scale_ln:
             raw = ' '.join(t for t, _, _ in scale_ln[0]).upper()
             m = re.search(r'([0-9IOL]{1,2}) ?/ ?([0-9IOL]{1,2})', raw)
@@ -276,6 +286,29 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     res.stats = dict(removed=len(gone), words=len(words), kind='elevation')
     return res
 
+
+def _typed_title_lines(typed, M, Ybot):
+    """The same, from typed text: the big ELEVATION line under the building, the title's other big lines
+    above or below it ('MODERN RANCH' over 'FRONT ELEVATION - 'A''), and the scale line."""
+    def box(w):
+        r = pymupdf.Rect(w['bb']) * M; r.normalize(); return (r.x0, r.y0, r.x1, r.y1)
+    items = [(w['n'].upper().strip(), box(w), w) for w in typed if not w['vert']]
+    fs = lambda it: it[2].get('fsize') or (it[1][3] - it[1][1])
+    heads = [it for it in items if re.search(r'\bELEV', it[0]) and it[1][1] >= Ybot - 4]
+    if not heads: return [], []
+    head = max(heads, key=fs); h = fs(head)
+    lines = [head]
+    for it in sorted(items, key=lambda z: abs(z[1][1] - head[1][1])):
+        if it in lines or re.search(r'SCALE', it[0]) or re.fullmatch(r'[\d ]+', it[0]): continue
+        gap = min(max(it[1][1] - l[1][3], l[1][1] - it[1][3]) for l in lines)
+        if 0.8 * h <= fs(it) <= 1.25 * h and gap < 1.2 * (head[1][3] - head[1][1]) \
+                and it[1][0] < head[1][2] + 2 * h and it[1][2] > head[1][0] - 2 * h:
+            lines.append(it)
+        if len(lines) == 3: break
+    lines = [[it] for it in sorted(lines, key=lambda z: z[1][1])]
+    scale = [it for it in items if re.search(r'SCALE', it[0]) and it[1][1] >= head[1][1] - h]
+    scale_lines = [[min(scale, key=lambda z: abs(z[1][1] - head[1][3]))]] if scale else []
+    return lines + scale_lines, scale_lines
 
 def _title_lines(page, pl, M, dregion, Ybot):
     """The title's lines and the scale line under the building, each [(text, display box, word)], read from

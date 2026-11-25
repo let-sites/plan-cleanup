@@ -84,8 +84,10 @@ def distinct(examples, same=0.92):
         if not dup: keep.append((ex, im))
     return [e for e, _ in keep]
 
-def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'ceiling_light', 0.06)):
-    """Return detections: dicts with cls, score, x, y (page pts), per-class scores."""
+def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'ceiling_light', 0.06), weak=0.0, weak_cls=()):
+    """Return detections: dicts with cls, score, x, y (page pts), per-class scores.
+    weak: at a circle or glyph, a weak_cls match this far under its threshold is returned too, marked 'weak'
+    (a cluttered outlet: its GFI label can vouch for it)."""
     T = []
     for ex in distinct(examples):
         t = ex.image()
@@ -93,7 +95,7 @@ def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'c
             T.append((ex, k, np.ascontiguousarray(np.rot90(t, k))))
     found = []
     def match_at(ax, ay, kind):
-        best = None; per = {}
+        best = None; per = {}; soft = None
         for ex, k, t in T:
             if ex.kind != kind: continue
             m = max(ex.half, getattr(ex, 'half_y', 0) or ex.half) + search      # turned, a tall box is a wide one
@@ -104,6 +106,9 @@ def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'c
             res = cv2.matchTemplate(win, t, cv2.TM_CCOEFF_NORMED)
             _, mx, _, loc = cv2.minMaxLoc(res)
             per[ex.cls] = max(per.get(ex.cls, 0), mx)
+            if weak and ex.cls in weak_cls and ex.threshold - weak <= mx < ex.threshold and (soft is None or mx > soft['score']):
+                soft = dict(cls=ex.cls, score=float(mx), x=region[0] + (x0 + loc[0] + t.shape[1] / 2) / S,
+                            y=region[1] + (y0 + loc[1] + t.shape[0] / 2) / S, hw=t.shape[1] / 2 / S, hh=t.shape[0] / 2 / S, weak=True)
             if mx >= ex.threshold and (best is None or mx > best['score']):
                 best = dict(cls=ex.cls, score=float(mx), x=region[0] + (x0 + loc[0] + t.shape[1] / 2) / S,
                             y=region[1] + (y0 + loc[1] + t.shape[0] / 2) / S, hw=t.shape[1] / 2 / S, hh=t.shape[0] / 2 / S)
@@ -112,6 +117,8 @@ def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'c
             if best['cls'] == a and per.get(b, 0) >= best['score'] - margin:
                 best['cls'] = b
             best['scores'] = {k: round(float(v), 3) for k, v in per.items() if v > 0.4}
+        elif soft:
+            best = soft; best['scores'] = {k: round(float(v), 3) for k, v in per.items() if v > 0.4}
         return best
     for kind, ax, ay in anc:
         h = match_at(ax, ay, kind)

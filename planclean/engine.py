@@ -69,6 +69,47 @@ def paired_walls(paths, K, thick=(3.0, 9.0), least=12.0):
             if hit[k]: good[pi] = good.get(pi, 0.0) + (a1 - a0)
     return {id(paths[pi]) for pi, g in good.items() if g >= 0.6 * total.get(pi, 1e9)}
 
+def usable_examples(page, profile, full, kept):
+    """Examples taught on something this builder's optional layers now leave off (a pendant taught before the
+    option layer was known) would find more of what's left: skip them."""
+    if len(kept) == len(full): return profile.symbols
+    import os
+    name = os.path.basename(getattr(page.parent, 'name', '') or '')
+    kept_ids = {id(p) for p in kept}
+    out = []
+    for ex in profile.symbols:
+        w = getattr(ex, 'where', None) or []
+        if len(w) >= 4 and os.path.basename(str(w[0])) == name and int(w[1]) == page.number:
+            x, y, h = float(w[2]), float(w[3]), max(ex.half, 4.0)
+            near = [p for p in full if abs((p['rect'].x0 + p['rect'].x1) / 2 - x) < h and abs((p['rect'].y0 + p['rect'].y1) / 2 - y) < h]
+            if near and sum(id(p) not in kept_ids for p in near) >= 0.4 * len(near): continue
+        out.append(ex)
+    return out
+
+
+# a symbol's own label words (they describe the builder's symbol, which the clean one replaces)
+SYMBOL_LABELS = {'GFCI', 'AFCI', 'GFI', 'WP', 'DISK', 'CLG', 'TYP', 'WPGFI', 'GFIWP', 'LED', 'RECEP', 'EXH', 'SD', 'COSD'}
+
+def typed_switches(texts, hits, profile):
+    """A builder who types their switches (Pulte's 'S', 'S' with a small 3): every lone typed S is a switch,
+    however well its picture matched. Only for builders whose taught switches are typed letters."""
+    if not any(ex.cls in ('switch', 'dimmer') and ex.kind == 'glyph' for ex in profile.symbols): return []
+    out = []
+    for l in texts:
+        cs = l['chars']
+        for i, (c, bb) in enumerate(cs):
+            if c not in 'S$': continue
+            prev = cs[i - 1][0] if i > 0 else ' '; nxt = cs[i + 1][0] if i + 1 < len(cs) else ' '
+            if not (prev.isspace() or prev in 'S$') or not (nxt.isspace() or nxt in 'S$34'): continue   # a letter of a word
+            x, y = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+            same = [h for h in hits + out if math.hypot(h['x'] - x, h['y'] - y) < 4 and h['cls'] in ('switch', 'dimmer')]
+            if same:
+                for h in same: h['score'] = max(h['score'], 0.9); h['tdir'] = tuple(l['dir'])   # the typed S says it is one
+                continue
+            out.append(dict(cls='switch', score=0.9, x=x, y=y, hw=5.0, hh=5.0, scores={}, typed=True, tdir=tuple(l['dir'])))
+    return out
+
+
 def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: None) -> Result:
     K = profile.inches_per_pt
     x0, y0 = region[0], region[1]
@@ -78,10 +119,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     full = page_paths(page)
     allp = drop_layers(full, profile)
     pl = [p for p in allp if in_region(p, region)]
+    dropped_paths = []
     if len(allp) < len(full):           # optional layers left off: their 'OPT.' notes and leaders go too
         from .optional import notes_on_dropped
         kept_ids = {id(p) for p in allp}
-        gone, boxes = notes_on_dropped(page, region, pl, [p for p in full if id(p) not in kept_ids and in_region(p, region)])
+        dropped_paths = [p for p in full if id(p) not in kept_ids and in_region(p, region)]
+        gone, boxes = notes_on_dropped(page, region, pl, dropped_paths)
         if gone: pl = [p for p in pl if id(p) not in gone]
         exclude = list(exclude) + boxes
     for ex in exclude:
@@ -96,7 +139,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     texts = page_text(page, region, exclude)            # typed text (some builders), not letters drawn as lines
     img = detect.symbol_image(symbolish, region, texts)
     anc = detect.anchors(symbolish) + text_anchors(texts)
-    hits = detect.classify(img, region, profile.symbols, anc)
+    OUTLET_CLS = ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet')
+    hits = detect.classify(img, region, usable_examples(page, profile, full, allp), anc, weak=0.12, weak_cls=OUTLET_CLS)
+    hits += typed_switches(texts, hits, profile)
 
     # 2. text
     progress('Reading text')
@@ -106,6 +151,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         # is only kept when it reads clearly as a real word
         words = [w for w in words if w['score'] >= 0.8 and len(re.sub(r'[^A-Z0-9]', '', w['n'])) >= 4]
     if texts: words = ocr.merge_same_line(words + ocr.typed_words(texts, page.rotation))
+    # an outlet that only half matched (a sink or a light drawn over it) counts when its GFI / WP label is beside it
+    def _vouched(h):
+        return any(re.search(r'GF|WP', w['n']) and math.hypot(w['cx'] - h['x'], w['cy'] - h['y']) < 16 for w in words)
+    hits = [h for h in hits if not h.get('weak') or _vouched(h)]
     # Sheet titles ('ELECTRICAL PLAN - OPT. 4TH CAR GARAGE') are often lettered with the wall pen: read big
     # lettering from short open strokes of the other pens too, and turn it into a clean title.
     letters = [p for p in pl if role(p) in ('wall', 'misc', 'casework') and not is_filled(p)
@@ -188,6 +237,14 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             r = p['rect']; return max(r.width, r.height) * K >= 18.0
         plain = {id(p) for p in elec if id(p) not in paired and _plain(p)}
         role = lambda p: 'wall' if id(p) in paired else 'misc' if id(p) in plain else pen_role(p)
+    # CAD layers, where the file has them: the electrical pen on a building or dimension layer (a door swing,
+    # a centerline) is the drawing, never a wire
+    _lay = lambda p: (p.get('layer') or '').split('|')[-1].strip().upper()
+    if any(_lay(p).startswith('E-') for p in pl):
+        def _arch(p):
+            n = _lay(p); return n.startswith(('A-', 'S-', 'L-', 'C-')) or 'DIM' in n
+        layer_role = role
+        role = lambda p: 'misc' if layer_role(p) == 'electrical' and _arch(p) else layer_role(p)
     walls = sample_lines([p for p in pl if role(p) == 'wall' and not is_filled(p)])
     faces = sample_lines([p for p in pl if role(p) in ('wall', 'opening', 'casework') and not is_filled(p)
                           and all(i[0] in ('l', 're', 'qu') for i in p['items'])])
@@ -203,7 +260,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         square = np.abs(anydir[:, 0] * dx_ + anydir[:, 1] * dy_) < 0.35
         m = (along > 3.0) & (along < reach) & (perp < 1.5) & square
         return float(along[m].min()) if m.any() else None
-    def facing(x, y, reach=18.0, hint=()):
+    def facing(x, y, reach=18.0, hint=(), rays=None):
         """Distance to the wall a symbol sits on and the unit direction pointing away from it (page coords).
         Walls are found straight up, down, left or right, so symbols always sit square to them.
         hint: ends of the builder's own stem/tails; a wall right at the end of one wins."""
@@ -220,7 +277,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 dd = wall_along(x, y, dx_, dy_, reach)
                 if dd is not None and abs(dd - abs(vx * dx_ + vy * dy_)) < 3.0: return dd, (-dx_, -dy_)
         best = None
-        for dx_, dy_ in RAYS:
+        for dx_, dy_ in (rays or RAYS):
             dd = wall_along(x, y, dx_, dy_, reach)
             if dd is not None and (best is None or dd < best[0]): best = (dd, (-dx_, -dy_))
         if best: return best
@@ -244,7 +301,11 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                         if not RATING_PART.search(w['n']): used.add(id(w))   # a circuit rating stays as a note
         if h['cls'] in ('ceiling_light', 'wall_light'):
             d, _ = nearest(walls, h['x'], h['y'])
-            h['cls'] = 'wall_light' if d < profile.wall_light_max_dist else 'ceiling_light'
+            # a builder's own wall light (a coach light on its stem) reaches the wall a little further out
+            lim = max(profile.wall_light_max_dist, h.get('hw', 0) + 3.0) if h['cls'] == 'wall_light' else profile.wall_light_max_dist
+            h['cls'] = 'wall_light' if d < lim else 'ceiling_light'
+        if h['cls'] in ('ceiling_light', 'disk_light') and 'WP' in h['mods']:
+            h['cls'] = 'wall_light'          # a weatherproof light is an outside wall light
         if h['cls'] == 'ceiling_light' and 'DISK' in h['mods']:
             h['cls'] = 'disk_light'
         # A wall symbol labelled 220V is a 220/240V outlet (its three lines can read as a wall light).
@@ -297,6 +358,17 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         t = re.sub(r'\b[AS]?[GS]FC[I1L]?\b', 'GFCI', re.sub(r'(\d)A([GS]FC)', r'\1A \2', t))
         t = re.sub(r'\b\d\b', '', t)                                 # a lone digit is a half-read amp rating: leave it out
         return re.sub(r'\s+', ' ', t).strip()
+    # a room name written on two lines ('COVERED' over 'PATIO') is one name
+    big = [w for w in words if id(w) not in used and w['size'] >= profile.room_text_min_size - 0.5 and not w.get('vert')]
+    for w in big:
+        for v in big:
+            if v is w or id(v) in used or id(w) in used: continue
+            hgt = w['bb'][3] - w['bb'][1]; gap = v['bb'][1] - w['bb'][3]
+            if not (-0.2 * hgt <= gap < 0.8 * hgt and abs(v['cx'] - w['cx']) < 0.5 * max(w['bb'][2] - w['bb'][0], v['bb'][2] - v['bb'][0])): continue
+            both = w['n'] + ' ' + v['n']
+            if difflib.get_close_matches(both, list(profile.room_names), n=1, cutoff=0.8):
+                w['n'] = both; w['bb'] = (min(w['bb'][0], v['bb'][0]), w['bb'][1], max(w['bb'][2], v['bb'][2]), v['bb'][3])
+                used.add(id(v))
     ratings = {}
     for w in words:
         if id(w) in used: continue
@@ -318,7 +390,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             w['room'] = ('OPT. ' if opt else '') + profile.room_names[m[0]]; rooms.append(w)
         else:
             # short labels next to a symbol (WP, GFI, GF, 220, Q, 3(T)...) describe the builder's symbol: drop them
-            short = len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 5
+            # (a real word or two, like PHOTO CELL by a coach light, is a note and stays)
+            core = re.sub(r'[^A-Za-z0-9]', '', n)
+            short = len(core) <= 3 or (len(core) <= 5 and (re.search(r'\d', core) or core.upper() in SYMBOL_LABELS))
             if short and any(math.hypot(h['x'] - w['cx'], h['y'] - w['cy']) < 26 for h in hits):
                 res.dropped_labels.append(n); continue
             if len(re.sub(r'[^A-Za-z0-9]', '', n)) <= 1:
@@ -358,6 +432,20 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             i = min(range(len(hits)), key=lambda i: gap(hits[i]))
             if gap(hits[i]) < max(36.0 if hits[i]['cls'] == 'fan' else 24.0, hits[i].get('hw', 0) + 12.0):   # under a fan's blades
                 hidden.add(i); notes.remove(w); res.dropped_labels.append(w['n'])
+    # a switch whose only wires are on a left-off layer is the option's switch (the pendants' or a pre-wired fan's)
+    if dropped_paths and not getattr(profile, 'optional_items', False):
+        def _ends(p):
+            it = [i for i in p['items'] if i[0] in ('l', 'c')]
+            if not it: return []
+            a, b = it[0][1], it[-1][-1]
+            return [] if abs(a.x - b.x) + abs(a.y - b.y) < 0.2 else [(a.x, a.y), (b.x, b.y)]   # closed: a symbol
+        dro = np.array([e for p in dropped_paths for e in _ends(p)] or np.zeros((0, 2)))
+        kep = np.array([e for p in pl if role(p) == 'electrical' for e in _ends(p)] or np.zeros((0, 2)))
+        def _d(E, h): return float(np.hypot(E[:, 0] - h['x'], E[:, 1] - h['y']).min()) if len(E) else 1e9
+        for i, h in enumerate(hits):
+            # the left-off wire starts right at it, and nothing kept starts as close
+            if h['cls'] in ('switch', 'dimmer') and i not in hidden and _d(dro, h) <= 8.0 and _d(dro, h) + 1.0 < _d(kep, h):
+                hidden.add(i)
 
     # 5. which paths stay
     progress('Cleaning')
@@ -381,7 +469,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         # the builder's symbol as big as the taught picture that matched it (a disk light with long spokes), else the usual size
         r = radius.get(h['cls'], 7.5)
         if h['cls'] == 'fan' and id(h) in hidden_ids: return max(r, min(h.get(k, 0), 30.0), 28.0)   # a left-off fan's blades reach far out
-        return max(r, min(h.get(k, 0), 15.0)) if h['cls'] not in ('switch', 'dimmer') else r
+        return max(r, min(h.get(k, 0) + 1.0, 16.0)) if h['cls'] not in ('switch', 'dimmer') else r   # +1: the match can sit a point off
     hidden_ids = {id(hits[i]) for i in hidden}
     hit_boxes = [(h['x'] - reach(h, 'hw'), h['y'] - reach(h, 'hh'), h['x'] + reach(h, 'hw'), h['y'] + reach(h, 'hh')) for h in hits]
     room_ids = {id(w) for w in rooms}
@@ -536,7 +624,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if len(hxy):
             d = np.hypot(hxy[:, 0] - pt[0], hxy[:, 1] - pt[1]); d[~wire_ok] = 1e9
             i = int(d.argmin())
-            if d[i] <= ATTACH: return i
+            if d[i] <= ATTACH:
+                # lights are wired to switches: a switch just beside an outlet takes the wire
+                if hits[i]['cls'] in ('outlet', 'outlet_240'):
+                    sw = [j for j in range(len(hits)) if hits[j]['cls'] in ('switch', 'dimmer') and d[j] <= min(d[i] + 10.0, ATTACH + 6)]
+                    if sw: return min(sw, key=lambda j: d[j])
+                return i
         for i, h in enumerate(hits):
             for b in h.get('note_boxes', ()):
                 if b[0] - 16 <= pt[0] <= b[2] + 16 and b[1] - 16 <= pt[1] <= b[3] + 16: return i
@@ -655,7 +748,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         ia, ib = wire_hit(P[0]), wire_hit(P[-1])
         if float((P.max(axis=0) - P.min(axis=0)).max()) < 8 and near_hit(P.mean(axis=0), 28) >= 0:
             removed['stray letters'] += 1; continue          # bits of GFI / WP / 220 labels
-        if len(seq) == 1:
+        def _tight(i, pt): return i >= 0 and math.hypot(hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]) <= at_sym(i) + 2
+        solid_wire = len(seq) == 1 and len(P) >= 6 and ia != ib and _tight(ia, P[0]) and _tight(ib, P[-1])
+        if len(seq) == 1 and not solid_wire:     # (a solid curve from one symbol right to another is a wire drawn solid)
             if length < 6 and ia < 0 and ib < 0:
                 removed['stray letters'] += 1; continue      # a lone tick (a bit of a label over the wire)
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue   # a solid stroke, not a dashed wire: leave it
@@ -725,6 +820,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         tries = ((hA, hB), (hA, None), (None, hB), (None, None))
         if hA is not None and hB is not None and np.hypot(*(P[0] - hA)) <= at_sym(ia) and np.hypot(*(P[-1] - hB)) <= at_sym(ib):
             tries = tries[:1]       # both ends right at a symbol: the wire runs symbol to symbol, never stops short
+        elif hA is not None and hB is not None:
+            tries = tries[:3]       # a wire between two symbols never keeps both its builder ends (an S-bend is one arc below)
         for A, B in tries:
             f = redraw(A if A is not None else P[0], B if B is not None else P[-1])
             if f and f[0] == 'arc' and A is not None and B is not None and abs((f[5] - f[4]) % 360) > 200:
@@ -786,7 +883,11 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if hi in hidden: continue
         X, Y = tx(h['x'], h['y'])
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']), shape=h.get('shape', ''))
-        d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()))
+        rays = None
+        if h.get('tdir'):       # a typed S is written along its wall: the wall is above or below the letter as read
+            tdx, tdy = h['tdir']; rays = [(0, 1), (0, -1)] if abs(tdx) >= abs(tdy) else [(1, 0), (-1, 0)]
+            if all(wall_along(h['x'], h['y'], a, b, 18.0) is None for a, b in rays): rays = None
+        d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()), rays=rays)
         s.dx, s.dy = ux, -uy
         if d <= 18: s.wall = d * K      # the block's insert point goes on this wall line (kept for every type: its type can change in review)
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"

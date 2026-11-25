@@ -474,7 +474,7 @@ class MainWindow(QMainWindow):
             self.run_clean()
 
     def redraw_box(self):
-        self.result = None; self._hide_orig_btn(); self.view.clear_overlay(); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
+        self.result = None; self._hide_orig_btn(); self.view.clear_overlay(); self.view.focus_region(False); self.tabs.setCurrentIndex(0); self.view.set_mode('box')
         self.clean_btn.setEnabled(self.region is not None)
 
     def _help(self, text):
@@ -957,6 +957,7 @@ class MainWindow(QMainWindow):
                        else 'a box around the plan (drag one on the sheet)')
             QMessageBox.information(self, 'Not ready', f'Still needed: {missing}.'); return
         prof = self.profile
+        self.view.focus_region(True)
         if self.sheet.kind == 'pdf':
             mode = mode or self.mode_cb.currentData()
             if not prof.symbols and mode != 'elevation': QMessageBox.information(self, 'Builder setup', 'Teach this builder at least one symbol first (Teach symbols…).'); return
@@ -979,12 +980,12 @@ class MainWindow(QMainWindow):
             for kind, payload in job.poll():
                 if kind == 'progress': state['step'] = payload
                 elif kind == 'done': stop(); self.on_cleaned(attach_to_page(payload, prof, region)); return
-                elif kind == 'failed': stop(); QMessageBox.critical(self, 'Something went wrong', str(payload)[-2000:]); return
+                elif kind == 'failed': stop(); self.view.focus_region(False); QMessageBox.critical(self, 'Something went wrong', str(payload)[-2000:]); return
             self.prog_lbl.setText(f"<b>Cleaning…</b> {state['step']} ({int(job.elapsed())} s)")
             self.statusBar().showMessage(f"Cleaning: {state['step']}")
         def cancel():
             if job.finished: return
-            job.cancel(); stop(); self.statusBar().showMessage('Cleaning cancelled.')
+            job.cancel(); stop(); self.view.focus_region(False); self.statusBar().showMessage('Cleaning cancelled.')
         self.prog_cancel.clicked.connect(cancel)
         timer.timeout.connect(tick)
         self._job = job; job.start(); tick(); timer.start(200)

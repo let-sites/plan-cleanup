@@ -40,7 +40,7 @@ class SheetView(QGraphicsView):
         for it in self.scene_.items():
             if it.parentItem() is None: self.scene_.removeItem(it)
         self.overlay = []; self.region_item = None; self._band = None; self.page_item = None; self.done_items = []
-        self.ex_markers = {}; self._drag = None
+        self.ex_markers = {}; self._drag = None; self._mask = None; self.focused = False
         self.page_item = self.scene_.addPixmap(pixmap)
         self.scene_.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self.page_item, Qt.KeepAspectRatio)
@@ -95,8 +95,25 @@ class SheetView(QGraphicsView):
             self.setTransformationAnchor(QGraphicsView.AnchorViewCenter); self.scale(f, f)
             self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
 
+    def focus_region(self, on):
+        """Once the box is drawn (cleaning, review): just the boxed area. No tint over it, the other areas'
+        green boxes hidden, the rest of the sheet blanked out. Off again when it's time to box the next area."""
+        from PySide6.QtGui import QPainterPath
+        if self._mask is not None and self._mask.scene() is self.scene_: self.scene_.removeItem(self._mask)
+        self._mask = None
+        on = bool(on and self.region_item is not None and self.region_item.scene() is self.scene_)
+        self.focused = on
+        for it in getattr(self, 'done_items', []): it.setVisible(not on)
+        if self.region_item is not None and self.region_item.scene() is self.scene_:
+            self.region_item.setVisible(not on)
+        if on:
+            r = self.region_item.rect(); path = QPainterPath(); path.addRect(self.sceneRect().adjusted(-5000, -5000, 5000, 5000))
+            inner = QPainterPath(); inner.addRect(r); path = path.subtracted(inner)
+            self._mask = self.scene_.addPath(path, QPen(Qt.NoPen), QBrush(self.backgroundBrush().color())); self._mask.setZValue(3)
+            self.fitInView(r.adjusted(-r.width() * 0.03, -r.height() * 0.03, r.width() * 0.03, r.height() * 0.03), Qt.KeepAspectRatio)
+
     def fit(self):
-        target = self.region_item if (self.region_item is not None and self.mode == 'review') else self.page_item
+        target = self.region_item if (self.region_item is not None and (self.mode == 'review' or getattr(self, 'focused', False))) else self.page_item
         if target is not None: self.fitInView(target, Qt.KeepAspectRatio)
 
     def mouseDoubleClickEvent(self, e):
@@ -237,6 +254,7 @@ class SheetView(QGraphicsView):
             t = self.scene_.addSimpleText('✓ ' + label, QFont('Arial', 11, QFont.Bold)); t.setBrush(QColor('#2e7d4c'))
             t.setFlag(t.GraphicsItemFlag.ItemIgnoresTransformations); t.setPos(r.left() + 4, r.top() + 4); t.setZValue(4)
             self.done_items.append(t)
+        for it in self.done_items: it.setVisible(not getattr(self, 'focused', False))
 
     @staticmethod
     @staticmethod

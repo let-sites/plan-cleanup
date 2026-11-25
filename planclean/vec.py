@@ -105,8 +105,19 @@ def draw_text(img, region, scale, lines):
 
 def text_anchors(lines, most=3):
     """Short typed labels ('S', 'S3', '$', 'WP') are symbols, or parts of them: places to look for one."""
-    return [('glyph', (l['bbox'][0] + l['bbox'][2]) / 2, (l['bbox'][1] + l['bbox'][3]) / 2)
-            for l in lines if len(l['text'].replace(' ', '')) <= most]
+    out = []
+    for l in lines:
+        if len(l['text'].replace(' ', '')) <= most and (' ' not in l['text'].strip() or not l.get('chars')):
+            out.append(('glyph', (l['bbox'][0] + l['bbox'][2]) / 2, (l['bbox'][1] + l['bbox'][3]) / 2)); continue
+        # a line can hold several ('S3 S' for a pair of switches side by side): each short word on its own
+        word = []
+        for c, bb in list(l.get('chars') or []) + [(' ', None)]:
+            if c.strip(): word.append(bb); continue
+            if word and len(word) <= most:
+                x0 = min(b[0] for b in word); y0 = min(b[1] for b in word); x1 = max(b[2] for b in word); y1 = max(b[3] for b in word)
+                out.append(('glyph', (x0 + x1) / 2, (y0 + y1) / 2))
+            word = []
+    return out
 
 def in_region(path, region):
     r = path['rect']; x0, y0, x1, y1 = region

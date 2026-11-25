@@ -22,7 +22,7 @@ class Teacher:
 
     def refresh(self):
         role = lambda p: self.profile.pen_roles.get(pen_key(p), 'misc')
-        sym = [p for p in self.paths if role(p) in ('electrical', 'misc', 'opening')]
+        sym = detect.symbol_paths(self.paths, role)
         self.img = detect.symbol_image(sym, self.region, self.texts)
         self.anchors = detect.anchors(sym) + text_anchors(self.texts)
 

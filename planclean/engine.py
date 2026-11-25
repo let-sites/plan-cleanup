@@ -82,13 +82,13 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     roles = dict(profile.pen_roles)
     role = lambda p: roles.get(pen_key(p), 'misc')
     elec = [p for p in pl if role(p) == 'electrical']
-    symbolish = [p for p in pl if role(p) in ('electrical', 'misc', 'opening')]
+    symbolish = detect.symbol_paths(pl, role)
 
     # 1. symbols
     progress('Finding symbols')
     texts = page_text(page, region, exclude)            # typed text (some builders), not letters drawn as lines
     img = detect.symbol_image(symbolish, region, texts)
-    anc = detect.anchors([p for p in pl if role(p) in ('electrical', 'misc', 'opening')]) + text_anchors(texts)
+    anc = detect.anchors(symbolish) + text_anchors(texts)
     hits = detect.classify(img, region, profile.symbols, anc)
 
     # 2. text

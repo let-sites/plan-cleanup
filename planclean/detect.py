@@ -12,6 +12,18 @@ def symbol_image(paths, region, texts=()):
     img = img.astype(np.float32)
     return cv2.GaussianBlur(img, (0, 0), 1.2)
 
+def symbol_paths(paths, role):
+    """What a symbol can be drawn with: the electrical (and unsorted) pens, plus small solid dots whatever their
+    pen (a pendant's black dot is often a fill the pens list calls a wall)."""
+    from .vec import is_filled, pen_key
+    out = []
+    for p in paths:
+        if role(p) in ('electrical', 'misc', 'opening'): out.append(p); continue
+        r = p['rect']
+        if is_filled(p) and pen_key(p) != 'fill #ffffff' and 1.5 < r.width < 10 and abs(r.width - r.height) < 0.25 * r.width:
+            out.append(p)
+    return out
+
 def _closed(p):
     it = p['items']
     a, b = it[0][1], it[-1][-1]
@@ -28,6 +40,8 @@ def anchors(paths):
         roundish = ncurve >= 4 or (nline >= 12 and _closed(p))
         if roundish and 3 < r.width < 20 and abs(r.width - r.height) < 0.4:
             out.append(('circle', (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))
+        elif roundish and p.get('fill') is not None and 1.5 < r.width <= 3 and abs(r.width - r.height) < 0.4:
+            out.append(('circle', (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))     # a small solid dot (a pendant)
         elif len(p['items']) >= 4 and max(r.width, r.height) < 8 and min(r.width, r.height) > 2.5:
             out.append(('glyph', (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))
     return out

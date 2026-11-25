@@ -105,6 +105,7 @@ class BuilderOptions(QWidget):
         v.addWidget(QLabel('<b>Other symbols</b>'))
         self.det = QCheckBox('Smoke and smoke/CO detectors'); self.det.setChecked(profile.detectors); v.addWidget(self.det)
         self.fan = QCheckBox('Exhaust fans (and their wires)'); self.fan.setChecked(profile.exhaust_fans); v.addWidget(self.fan)
+        self.opt = QCheckBox('Optional items labeled OPT. (like an OPT. PRE-WIRE fan)'); self.opt.setChecked(getattr(profile, 'optional_items', False)); v.addWidget(self.opt)
         # notes deleted during review are left off from then on: list them so a mistake can be undone
         from planclean.profile import DEFAULT_DROP
         self.learned = [p for p in profile.drop_labels if p not in DEFAULT_DROP]
@@ -120,7 +121,7 @@ class BuilderOptions(QWidget):
             v.addWidget(rm, 0, Qt.AlignLeft)
         if changed:
             self.scale.currentIndexChanged.connect(lambda _: self.apply())
-            self.out_group.idClicked.connect(lambda _: self.apply()); self.det.toggled.connect(lambda _: self.apply()); self.fan.toggled.connect(lambda _: self.apply())
+            self.out_group.idClicked.connect(lambda _: self.apply()); self.det.toggled.connect(lambda _: self.apply()); self.fan.toggled.connect(lambda _: self.apply()); self.opt.toggled.connect(lambda _: self.apply())
 
     def _show_again(self):
         for i in self.drop_list.selectedItems(): self.drop_list.takeItem(self.drop_list.row(i))
@@ -130,6 +131,7 @@ class BuilderOptions(QWidget):
         self.profile.inches_per_pt = self.scale.currentData() / 72
         self.profile.outlets = OUTLET_CHOICES[max(self.out_group.checkedId(), 0)][0]
         self.profile.detectors = self.det.isChecked(); self.profile.exhaust_fans = self.fan.isChecked()
+        self.profile.optional_items = self.opt.isChecked()
         if self.drop_list is not None:
             keep = {self.drop_list.item(i).data(Qt.UserRole) for i in range(self.drop_list.count())}
             self.profile.drop_labels = [p for p in self.profile.drop_labels if p not in self.learned or p in keep]

@@ -65,6 +65,7 @@ class Profile:
     outlets: str = 'all'                    # 'all' | 'outside' (exterior and garage only) | 'none'
     detectors: bool = True                  # smoke and smoke/CO detectors
     exhaust_fans: bool = True
+    optional_items: bool = False            # True keeps symbols labelled OPT. right at them ('OPT. PRE-WIRE'); LET leaves options off
     turns: dict = field(default_factory=dict)   # symbol type -> {'90': count, ...}: how far people turned it in review (learned)
     TEMPLATE_SCALE = 6
 

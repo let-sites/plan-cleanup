@@ -336,6 +336,16 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if profile.outlets == 'none' or (profile.outlets == 'outside' and not outside_or_garage(h)): hidden.add(i)
         elif c in ('smoke', 'co_smoke') and not profile.detectors: hidden.add(i)
         elif c == 'exhaust_fan' and not profile.exhaust_fans: hidden.add(i)
+    # a symbol with its own OPT. label ('OPT. PRE-WIRE' under a fan) is an option: leave it, its wires and the label off
+    if not getattr(profile, 'optional_items', False) and hits:
+        for w in list(notes):
+            # just 'OPT.' or 'OPT. PRE-WIRE' (not an area note like 'OPT. 4TH GARAGE BAY')
+            if not re.fullmatch(r'OPT(ION(AL)?)?\.?( ?(PRE ?-? ?WIRE[D]?|ONLY))?', ' '.join(w.get('lines', [w['n']])).strip()): continue
+            bb = w['bb']
+            def gap(h): return math.hypot(max(0.0, bb[0] - h['x'], h['x'] - bb[2]), max(0.0, bb[1] - h['y'], h['y'] - bb[3]))
+            i = min(range(len(hits)), key=lambda i: gap(hits[i]))
+            if gap(hits[i]) < 24:
+                hidden.add(i); notes.remove(w); res.dropped_labels.append(w['n'])
 
     # 5. which paths stay
     progress('Cleaning')

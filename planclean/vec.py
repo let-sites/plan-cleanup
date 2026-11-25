@@ -37,10 +37,18 @@ def pen_key(path) -> str:
 def layer_key(path) -> str:
     return path.get('layer') or ''
 
+def layer_default(name):
+    """A CAD layer named for options (Pulte's A-FP-OPTION) holds optional items: left off unless set to Keep."""
+    return 'remove' if 'OPTION' in name.upper() else 'keep'
+
 def drop_layers(paths, profile):
     """Leave out what's drawn on the builder PDF layers set to Leave off (optional items, say)."""
-    off = {k for k, v in (getattr(profile, 'pdf_layer_roles', None) or {}).items() if v == 'remove'}
-    return [p for p in paths if layer_key(p) not in off] if off else paths
+    roles = getattr(profile, 'pdf_layer_roles', None) or {}
+    off = {}
+    def is_off(k):
+        if k not in off: off[k] = bool(k) and roles.get(k, layer_default(k)) == 'remove'
+        return off[k]
+    return [p for p in paths if not is_off(layer_key(p))]
 
 def is_filled(path):
     return path['type'] in ('f', 'fs')

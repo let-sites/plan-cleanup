@@ -752,13 +752,13 @@ class MainWindow(QMainWindow):
                 self._role_row(k, s['count'], self.profile.pen_roles, PEN_ROLES)
             # the builder's CAD layers, when the PDF kept them: a whole layer can be left off (optional items)
             from collections import Counter
-            from planclean.vec import layer_key
+            from planclean.vec import layer_key, layer_default
             lay = Counter(layer_key(p) for p in paths if layer_key(p))
             if lay:
                 r = self.roles.rowCount(); self.roles.insertRow(r)
                 h = QTableWidgetItem('Drawing layers'); h.setFlags(Qt.ItemIsEnabled); f = h.font(); f.setBold(True); h.setFont(f)
                 self.roles.setItem(r, 0, h); self.roles.setSpan(r, 0, 1, 3)
-                for k, n in lay.most_common(): self._role_row(k, n, self.profile.pdf_layer_roles, LAYER_ROLES, default='keep', layer=True)
+                for k, n in lay.most_common(): self._role_row(k, n, self.profile.pdf_layer_roles, LAYER_ROLES, default=layer_default(k), layer=True)
         else:
             layers, blocks = dwgin.inventory(self.sheet.doc)
             self.roles_lbl.setText('Layers in this drawing'); self.teach_tabs.setTabText(1, 'Layers')
@@ -769,7 +769,7 @@ class MainWindow(QMainWindow):
 
     def _role_row(self, key, count, store, roles, default='misc', layer=False):
         r = self.roles.rowCount(); self.roles.insertRow(r)
-        it = QTableWidgetItem(key.split('|')[-1] if layer else key); it.setData(Qt.UserRole, ('layer:' + key) if layer else key)
+        it = QTableWidgetItem((key.split('|')[-1] + ('  (' + key.split('|')[0].split(' - ')[0].strip() + ')' if '|' in key else '')) if layer else key)   # 'A-FP-OPTION  (Plan 1)'; it.setData(Qt.UserRole, ('layer:' + key) if layer else key)
         it.setToolTip(key); self.roles.setItem(r, 0, it)
         self.roles.setItem(r, 1, QTableWidgetItem(str(count)))
         cb = QComboBox(); cb.addItems(list(roles.values()))

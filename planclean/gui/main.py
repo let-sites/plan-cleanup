@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
         act(m, 'Show original on/off', lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
         m = mb.addMenu('Builders')
         act(m, 'Builders and what they show…', self.manage_builders, tip='See every builder; change what to show, rename, archive or delete')
-        act(m, 'Teach this builder\'s symbols…', self.open_teach)
+        act(m, 'Teach this builder\'s symbols…', self.open_teach, QKeySequence('Ctrl+T'), tip='All of this builder\'s taught symbols, to check, change or delete')
 
     def _fill_recent(self):
         self.recent_menu.clear()
@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
     def open_teach(self):
         if not self.profile: QMessageBox.information(self, 'Teach symbols', 'Start or open a plan first.'); return
         self._teach_from = self.tabs.currentIndex() if self.tabs.currentIndex() != 1 else 0
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentIndex(1); self.fill_setup()            # the builder's whole list, fresh
         # from the review: Done goes back to it, your fixes kept (Redo clean cleans again with what you taught)
         self.teach_done.setText('Done: back to the review' if self.result else 'Done: save and clean the area')
         if self.region: self.view.clear_overlay(); self.view.page_item and self.view.page_item.setOpacity(1.0); self.view.set_mode('teach')
@@ -711,15 +711,15 @@ class MainWindow(QMainWindow):
         if not self.profile or not self.sheet: return
         if self.sheet.kind == 'pdf':
             self.roles_lbl.setText('Click a line type to see it highlighted on the plan.'); self.teach_tabs.setTabText(1, 'Line types')
+            self.sym_lbl.setText('Click one of each kind of symbol on the plan.'); self.teach_tabs.setTabText(0, 'Symbols')
+            for ex in self.profile.symbols: self._example_row(ex)          # all of the builder's, box or no box
+            self.teach_btn.setEnabled(True)
             if not self.region: return
             paths = [p for p in self.sheet.page.get_drawings() if in_region(p, self.region)]
             st = sorted(pens_in(paths).items(), key=lambda kv: -kv[1]['count'])
             for k, s in st:
                 self.profile.pen_roles.setdefault(k, 'misc')
                 self._role_row(k, s['count'], self.profile.pen_roles, PEN_ROLES)
-            self.sym_lbl.setText('Click one of each kind of symbol on the plan.'); self.teach_tabs.setTabText(0, 'Symbols')
-            for ex in self.profile.symbols: self._example_row(ex)
-            self.teach_btn.setEnabled(True)
         else:
             layers, blocks = dwgin.inventory(self.sheet.doc)
             self.roles_lbl.setText('Layers in this drawing'); self.teach_tabs.setTabText(1, 'Layers')

@@ -45,6 +45,11 @@ def raster(paths, region, scale, thick=1):
     img = np.zeros((H, W), np.uint8)
     for p in paths:
         fill = is_filled(p)
+        if fill:      # a solid shape: its pieces (a dot's four curves) make one outline, filled
+            pcs = polylines(p)
+            if pcs and len(pcs) > 1 and max(p['rect'].width, p['rect'].height) < 10:
+                q = ((np.concatenate(pcs) - [x0, y0]) * scale * 16).round().astype(np.int32)
+                cv2.fillPoly(img, [q], 255, cv2.LINE_AA, shift=4)
         for pl in polylines(p):
             q = ((pl - [x0, y0]) * scale * 16).round().astype(np.int32)
             if fill and len(q) > 2:

@@ -74,6 +74,19 @@ def raster(paths, region, scale, thick=1):
     return img
 
 # ---------- typed text (some builders' PDFs have real text, not letters drawn as lines)
+def span_chars(spans):
+    """The letters of a line's spans. A raised small 0 after a number is the builder's shorthand for feet
+    (Pulte's 9 with a little 0 over it is 9'-0"): spell it out."""
+    out = []
+    for s in spans:
+        cs = [(c['c'], tuple(c['bbox'])) for c in s['chars']]
+        t = ''.join(c for c, _ in cs).strip()
+        if (s.get('flags', 0) & 1) and t in ('0', 'o', 'O', '\u00ba', '\u00b0') and out and out[-1][0].isdigit():
+            x0, y0, x1, y1 = cs[0][1]; w = (x1 - x0) / 4
+            cs = [(c, (x0 + i * w, y0, x0 + (i + 1) * w, y1)) for i, c in enumerate("'-0\"")]
+        out += cs
+    return out
+
 def page_text(page, region=None, exclude=()):
     """Typed text lines on a PDF page, in page points (the same space as the drawings):
     dicts with text, bbox, dir (reading direction), size and chars [(c, bbox)]."""
@@ -82,7 +95,7 @@ def page_text(page, region=None, exclude=()):
     except Exception: return out
     for b in blocks:
         for l in b.get('lines', []):
-            chars = [(c['c'], tuple(c['bbox'])) for s in l['spans'] for c in s['chars']]
+            chars = span_chars(l['spans'])
             txt = ''.join(c for c, _ in chars).strip()
             if not txt: continue
             x0, y0, x1, y1 = l['bbox']; cx, cy = (x0 + x1) / 2, (y0 + y1) / 2

@@ -17,7 +17,7 @@ def engine():
     return _engine
 
 def norm(t):
-    t = re.sub(r"[^A-Z0-9/&.()' -]", '', t.upper().replace('$', '&')).strip()
+    t = re.sub(r'[^A-Z0-9/&.()\'" -]', '', t.upper().replace('$', '&')).strip()
     # an O among digits is a zero ('22OV 4OA' -> '220V 40A')
     return re.sub(r"\b(?=[0-9O]*[0-9])[0-9O]+[A-Z]?\b", lambda m: m.group().replace('O', '0'), t)
 

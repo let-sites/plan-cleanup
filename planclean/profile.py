@@ -42,6 +42,7 @@ class SymbolExample:
     half_y: float = 0.0      # half window height when it isn't square (a skinny symbol); 0 = same as half
     learned: bool = False    # saved from the review (Change type / Looks right), not taught
     where: list = field(default_factory=list)   # [file, page, x, y] where it was taught (page points), to show it again
+    context: str = ''        # base64 PNG of the sheet around it when taught: to see what it was from any plan
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     def image(self):

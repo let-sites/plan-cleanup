@@ -57,6 +57,19 @@ def upright(res, item):
     except Exception: return res
     return turned(res, -rot)
 
+
+def _context_png(page, x, y, half, around=7.0, zoom=3.0):
+    """A small picture of the sheet around a symbol (page points), its box outlined, as base64 PNG."""
+    import cv2, numpy as np
+    from planclean.profile import img_to_b64
+    r = max(18.0, half * around)
+    clip = pymupdf.Rect(x - r, y - r, x + r, y + r) * page.rotation_matrix; clip.normalize()
+    pm = page.get_pixmap(clip=clip, matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
+    img = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width).copy()
+    c = (pm.width // 2, pm.height // 2); hh = int(half * zoom)
+    cv2.rectangle(img, (c[0] - hh, c[1] - hh), (c[0] + hh, c[1] + hh), 120, 2)
+    return img_to_b64(img)
+
 class Worker(QObject):
     done = Signal(object); failed = Signal(str); progress = Signal(str)
     def __init__(self, fn): super().__init__(); self.fn = fn
@@ -750,6 +763,9 @@ class MainWindow(QMainWindow):
     def _example_row(self, ex):
         r = self.examples.rowCount(); self.examples.insertRow(r)
         it = QTableWidgetItem(); it.setIcon(self._example_icon(ex)); it.setData(Qt.UserRole, ex.id); self.examples.setItem(r, 0, it)
+        w = getattr(ex, 'where', None) or []
+        it.setToolTip(f'{"Learned" if getattr(ex, "learned", False) else "Taught"} on {Path(w[0]).stem}, page {int(w[1]) + 1}. Click to see it.'
+                      if len(w) >= 4 else 'Click to see it')
         self.examples.setRowHeight(r, 60)
         btns = QWidget(); h = QHBoxLayout(btns); h.setContentsMargins(2, 2, 2, 2); h.setSpacing(4)
         x = QToolButton(); x.setIcon(_trash_icon()); x.setIconSize(QSize(18, 18)); x.setAutoRaise(True); x.setToolTip('Delete this example'); x.clicked.connect(lambda _=False, e=ex: self.remove_example(e)); h.addWidget(x)
@@ -815,7 +831,7 @@ class MainWindow(QMainWindow):
         if old is not None:                      # fixing an off-centre example: same type, new picture
             self._recentre = None
             ex, (cx, cy) = self.teacher.example_at(x, y, old.cls)
-            ex.learned = getattr(old, 'learned', False); ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
+            ex.learned = getattr(old, 'learned', False); self._stamp(ex, cx, cy)
             i = next((k for k, e in enumerate(self.profile.symbols) if e.id == old.id), None)
             if i is None: self.profile.symbols.append(ex)
             else: self.profile.symbols[i] = ex
@@ -834,7 +850,7 @@ class MainWindow(QMainWindow):
             if self.profile.pen_roles.get(k) in (None, 'misc') and not k.startswith('fill'): self.profile.pen_roles[k] = 'electrical'
         self.teacher.refresh()
         ex, (cx, cy) = self.teacher.example_at(x, y, cls)
-        ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
+        self._stamp(ex, cx, cy)
         self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly(); self._ex_marker(ex)
 
     def _example_icon(self, ex):
@@ -852,16 +868,58 @@ class MainWindow(QMainWindow):
             if self.examples.item(r, 0) and self.examples.item(r, 0).data(Qt.UserRole) == eid: return r
         return -1
 
+    def _stamp(self, ex, x, y):
+        """Remember where an example came from, and a picture of the sheet around it."""
+        ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), x, y]
+        try: ex.context = _context_png(self.sheet.page, x, y, max(ex.half, getattr(ex, 'half_y', 0) or 0))
+        except Exception: ex.context = ''
+
+    def _example_ref(self, ex):
+        """An example taught on another sheet: what it was, where, and a way back to it."""
+        w = getattr(ex, 'where', None) or []
+        if not getattr(ex, 'context', '') and len(w) >= 4 and Path(w[0]).exists():
+            try:
+                d = pymupdf.open(w[0]); ex.context = _context_png(d[int(w[1])], w[2], w[3], max(ex.half, getattr(ex, 'half_y', 0) or 0))
+                self._save_quietly()
+            except Exception: pass
+        dlg = QDialog(self); dlg.setWindowTitle(sym_label(ex.cls).split(' (')[0]); v = QVBoxLayout(dlg)
+        where = f'{Path(w[0]).stem}, page {int(w[1]) + 1}' if len(w) >= 4 else 'a plan from before the app kept track'
+        v.addWidget(QLabel(f'<b>{sym_label(ex.cls)}</b><br>{"Learned from your review" if getattr(ex, "learned", False) else "Taught"} on {where}.'))
+        if getattr(ex, 'context', ''):
+            from planclean.profile import b64_to_img
+            img = b64_to_img(ex.context); qi = QImage(img.data, img.shape[1], img.shape[0], img.strides[0], QImage.Format_Grayscale8).copy()
+            pic = QLabel(); pic.setPixmap(QPixmap.fromImage(qi)); pic.setAlignment(Qt.AlignCenter); v.addWidget(pic)
+            v.addWidget(QLabel('The box is what it learned from.'))
+        else:
+            v.addWidget(QLabel('No picture saved for this one, and its PDF isn\'t where it was.'))
+        bb = QDialogButtonBox(); i = self._sheet_index(w[0], int(w[1])) if len(w) >= 4 else -1
+        go = bb.addButton('Go to it', QDialogButtonBox.AcceptRole) if i >= 0 else None
+        dele = bb.addButton('Delete example', QDialogButtonBox.DestructiveRole); bb.addButton('Close', QDialogButtonBox.RejectRole)
+        if i < 0 and len(w) >= 4: v.addWidget(QLabel('<span style="color:#6b7780">To adjust it, add that PDF to a plan and open its page.</span>'))
+        choice = {}
+        if go: go.clicked.connect(lambda: (choice.setdefault('a', 'go'), dlg.accept()))
+        dele.clicked.connect(lambda: (choice.setdefault('a', 'del'), dlg.accept())); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if not dlg.exec(): return
+        if choice.get('a') == 'del':
+            if QMessageBox.question(self, 'Delete example', 'Delete this example from the builder?') == QMessageBox.Yes: self.remove_example(ex)
+        elif choice.get('a') == 'go':
+            self.pages.setCurrentRow(i)
+            if not self.region:            # a small box around it, so it can be re-centred or resized right there
+                x, y = float(w[2]), float(w[3]); self.region = (x - 80, y - 80, x + 80, y + 80); self.teacher = None
+            self.open_teach()
+            m = self.view.ex_markers.get(ex.id)
+            if m is not None:
+                h = max(m.rect().width() / 2, 4.0); c = m.pos()
+                self.view.fitInView(QRectF(c.x() - 10 * h, c.y() - 7 * h, 20 * h, 14 * h), Qt.KeepAspectRatio)
+                self.view.select_ex_marker(ex.id); self._picked_ex = ex.id
+
     def goto_example(self, row, _col=None):
         """Clicking a taught symbol in the list: show it on the plan and select it, ready to adjust."""
         it = self.examples.item(row, 0)
         ex = self._example(it.data(Qt.UserRole)) if it else None
         if ex is None: return
         m = self.view.ex_markers.get(ex.id)
-        if m is None:
-            w = getattr(ex, 'where', None) or []
-            where = f'{Path(w[0]).name}, page {w[1] + 1}' if len(w) >= 4 else 'a plan from before the app kept track'
-            self.statusBar().showMessage(f'This one was taught on {where}, so it isn\'t on this sheet.', 6000); return
+        if m is None: self._example_ref(ex); return
         h = max(m.rect().width() / 2, 4.0); c = m.pos()
         self.view.fitInView(QRectF(c.x() - 10 * h, c.y() - 7 * h, 20 * h, 14 * h), Qt.KeepAspectRatio)
         self.view.select_ex_marker(ex.id); self._picked_ex = ex.id
@@ -904,7 +962,7 @@ class MainWindow(QMainWindow):
         ex, (cx, cy) = self.teacher.example_at(x, y, old.cls, half=half or old.half, snap=False,
                                                half_y=getattr(old, 'half_y', 0.0) if half_y is None else half_y)
         ex.id = old.id; ex.learned = getattr(old, 'learned', False); ex.rotations = old.rotations; ex.threshold = old.threshold
-        ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), cx, cy]
+        self._stamp(ex, cx, cy)
         i = next((k for k, e in enumerate(self.profile.symbols) if e.id == old.id), None)
         if i is not None: self.profile.symbols[i] = ex
         r = self._example_rowof(old.id)
@@ -1281,7 +1339,7 @@ class MainWindow(QMainWindow):
             try:                      # centre it on the builder's drawing, and learn it so next time it's found
                 if self.teacher is None: self.teacher = Teacher(self.sheet.page, self.region, self.profile)
                 ex, (x, y) = self.teacher.example_at(x, y, cls); ex.learned = True
-                ex.where = [self.sheet.path, getattr(self.sheet, 'index', 0), x, y]
+                self._stamp(ex, x, y)
             except Exception: ex = None
         X, Y = self._to_drawing(x, y)
         from planclean.result import Sym
@@ -1482,7 +1540,7 @@ class MainWindow(QMainWindow):
             if self.teacher is None: self.teacher = Teacher(self.sheet.page, self.region, self.profile)
             x, y = self.result.to_page(s.x, s.y)
             ex, _ = self.teacher.example_at(x, y, s.cls)
-            ex.learned = True
+            ex.learned = True; self._stamp(ex, x, y)
             from planclean.detect import distinct
             if ex not in distinct(self.profile.symbols + [ex]):      # it already knows one just like it
                 self.statusBar().showMessage(f'Already knows this {sym_label(s.cls).split(" (")[0].lower()}.', 4000); return

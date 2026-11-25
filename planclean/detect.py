@@ -106,7 +106,7 @@ def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'c
             per[ex.cls] = max(per.get(ex.cls, 0), mx)
             if mx >= ex.threshold and (best is None or mx > best['score']):
                 best = dict(cls=ex.cls, score=float(mx), x=region[0] + (x0 + loc[0] + t.shape[1] / 2) / S,
-                            y=region[1] + (y0 + loc[1] + t.shape[0] / 2) / S)
+                            y=region[1] + (y0 + loc[1] + t.shape[0] / 2) / S, hw=t.shape[1] / 2 / S, hh=t.shape[0] / 2 / S)
         if best:
             a, b, margin = wall_bias
             if best['cls'] == a and per.get(b, 0) >= best['score'] - margin:
@@ -153,7 +153,7 @@ def classify(img, region, examples, anc, search=2.0, wall_bias=('wall_light', 'c
             rr = cv2.matchTemplate(win, t, cv2.TM_CCOEFF_NORMED); _, mx, _, loc = cv2.minMaxLoc(rr)
             if mx < thr: continue
             found.append(dict(cls=ex.cls, score=float(mx), x=region[0] + (X0 + loc[0] + t.shape[1] / 2) / S,
-                              y=region[1] + (Y0 + loc[1] + t.shape[0] / 2) / S, scores={}))
+                              y=region[1] + (Y0 + loc[1] + t.shape[0] / 2) / S, scores={}, hw=t.shape[1] / 2 / S, hh=t.shape[0] / 2 / S))
     found.sort(key=lambda h: -h['score'])
     keep = []
     for h in found:

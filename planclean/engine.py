@@ -37,7 +37,7 @@ def guess_roles(paths, electrical_pens=()):
 TITLE_H = 9.0          # inches: the sheet title's text height (Settings.text_height_title)
 
 # a dimension or centre-line mark the builder typed (2'-6", (TYP.), CL): not a note
-DIMENSION = re.compile(r"\d+'(-? ?\d+( \d/\d)?)?|\(TYP\.?\)|C/?L")
+DIMENSION = re.compile(r"\d+'(-? ?\d+( \d/\d)?\"?)?|\d+\"|\(TYP\.?\)|C/?L")
 
 def paired_walls(paths, K, thick=(3.0, 9.0), least=12.0):
     """ids of paths that are wall faces: straight, square to the sheet, with another such line a wall's thickness
@@ -75,8 +75,15 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     def tx(x, y): return ((x - x0) * K, -(y - y0) * K)
     res = Result(); res.to_page = lambda X, Y: (X / K + x0, -Y / K + y0)
     progress('Reading the sheet')
-    allp = drop_layers(page_paths(page), profile)
+    full = page_paths(page)
+    allp = drop_layers(full, profile)
     pl = [p for p in allp if in_region(p, region)]
+    if len(allp) < len(full):           # optional layers left off: their 'OPT.' notes and leaders go too
+        from .optional import notes_on_dropped
+        kept_ids = {id(p) for p in allp}
+        gone, boxes = notes_on_dropped(page, region, pl, [p for p in full if id(p) not in kept_ids and in_region(p, region)])
+        if gone: pl = [p for p in pl if id(p) not in gone]
+        exclude = list(exclude) + boxes
     for ex in exclude:
         pl = [p for p in pl if not in_region(p, ex)]
     roles = dict(profile.pen_roles)
@@ -94,6 +101,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     # 2. text
     progress('Reading text')
     words = ocr.read_words(elec, region, page.rotation)     # page-fixed tiles: the box drawn doesn't change a word
+    if len(texts) >= 15:
+        # the builder typed their text: what reads as letters in the linework (cabinet lines read as 'NN', 'UL')
+        # is only kept when it reads clearly as a real word
+        words = [w for w in words if w['score'] >= 0.8 and len(re.sub(r'[^A-Z0-9]', '', w['n'])) >= 4]
     if texts: words = ocr.merge_same_line(words + ocr.typed_words(texts, page.rotation))
     # Sheet titles ('ELECTRICAL PLAN - OPT. 4TH CAR GARAGE') are often lettered with the wall pen: read big
     # lettering from short open strokes of the other pens too, and turn it into a clean title.
@@ -340,11 +351,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     if not getattr(profile, 'optional_items', False) and hits:
         for w in list(notes):
             # just 'OPT.' or 'OPT. PRE-WIRE' (not an area note like 'OPT. 4TH GARAGE BAY')
-            if not re.fullmatch(r'OPT(ION(AL)?)?\.?( ?(PRE ?-? ?WIRE[D]?|ONLY))?', ' '.join(w.get('lines', [w['n']])).strip()): continue
+            lab = ' '.join(t for t in w.get('lines', [w['n']]) if not DIMENSION.fullmatch(t.strip()))   # a dimension stacked under it isn't part of it
+            if not re.fullmatch(r'OPT(ION(AL)?)?\.?( ?(PRE ?-? ?WIRE[D]?|ONLY))?', lab.strip()): continue
             bb = w['bb']
             def gap(h): return math.hypot(max(0.0, bb[0] - h['x'], h['x'] - bb[2]), max(0.0, bb[1] - h['y'], h['y'] - bb[3]))
             i = min(range(len(hits)), key=lambda i: gap(hits[i]))
-            if gap(hits[i]) < 24:
+            if gap(hits[i]) < max(36.0 if hits[i]['cls'] == 'fan' else 24.0, hits[i].get('hw', 0) + 12.0):   # under a fan's blades
                 hidden.add(i); notes.remove(w); res.dropped_labels.append(w['n'])
 
     # 5. which paths stay
@@ -365,8 +377,13 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             out[i:i + 2000] = ((r[..., 0] >= B[:, 0]) & (r[..., 2] <= B[:, 2]) &
                                (r[..., 1] >= B[:, 1]) & (r[..., 3] <= B[:, 3])).any(axis=1)
         return out
-    hit_boxes = [(h['x'] - radius.get(h['cls'], 7.5), h['y'] - radius.get(h['cls'], 7.5),
-                  h['x'] + radius.get(h['cls'], 7.5), h['y'] + radius.get(h['cls'], 7.5)) for h in hits]
+    def reach(h, k):
+        # the builder's symbol as big as the taught picture that matched it (a disk light with long spokes), else the usual size
+        r = radius.get(h['cls'], 7.5)
+        if h['cls'] == 'fan' and id(h) in hidden_ids: return max(r, min(h.get(k, 0), 30.0), 28.0)   # a left-off fan's blades reach far out
+        return max(r, min(h.get(k, 0), 15.0)) if h['cls'] not in ('switch', 'dimmer') else r
+    hidden_ids = {id(hits[i]) for i in hidden}
+    hit_boxes = [(h['x'] - reach(h, 'hw'), h['y'] - reach(h, 'hh'), h['x'] + reach(h, 'hw'), h['y'] + reach(h, 'hh')) for h in hits]
     room_ids = {id(w) for w in rooms}
     word_boxes, word_boxes_ext = [], []
     for w in words:
@@ -622,6 +639,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             out.append(cur)
         return out
     sym_wires = []                   # (symbol, symbol, arc) for wires that run from one symbol to another
+    def at_sym(i):
+        """How far from a symbol's centre a wire end still touches it: past a big builder symbol's spokes."""
+        return max(12.0, min(hits[i].get('hw', 0) + 1.0, 16.0))
     def emit(f):
         if f[0] == 'arc':
             cx, cy, r, a0, a1 = f[1:]
@@ -646,7 +666,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         closed = Lc < 0.3 * length                          # loops back on itself (range burners, circles)
         # a run of plain straight strokes (one or two segments each), touching no symbol, is linework such as
         # an appliance outline: a wire's dashes follow its curve with many small segments
-        def _loose(i, pt): return i < 0 or math.hypot(hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]) > 12
+        def _loose(i, pt): return i < 0 or math.hypot(hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]) > at_sym(i)
         if _loose(ia, P[0]) and _loose(ib, P[-1]) and all(len(q) <= 3 for q in seq) and max(plen(q) for q in seq) > 6:
             for q in seq: res.lines.append(('misc', [tx(*v) for v in q], False))
             continue
@@ -692,7 +712,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             """The end reaches the symbol: right at it, or within reach and heading straight for it."""
             if i < 0: return False
             v = np.array([hits[i]['x'] - pt[0], hits[i]['y'] - pt[1]]); dd = float(np.hypot(*v))
-            if dd <= 12: return True
+            if dd <= at_sym(i): return True
             out = -inward / (float(np.hypot(*inward)) or 1.0)
             return float(out @ v) / dd > 0.8
         if not _attached(ia, P[0], P[min(3, len(P) - 1)] - P[0]) and not _attached(ib, P[-1], P[max(-4, -len(P))] - P[-1]) \
@@ -703,7 +723,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         hB = np.array([hits[ib]['x'], hits[ib]['y']]) if ib >= 0 else None
         f = None
         tries = ((hA, hB), (hA, None), (None, hB), (None, None))
-        if hA is not None and hB is not None and np.hypot(*(P[0] - hA)) <= 12 and np.hypot(*(P[-1] - hB)) <= 12:
+        if hA is not None and hB is not None and np.hypot(*(P[0] - hA)) <= at_sym(ia) and np.hypot(*(P[-1] - hB)) <= at_sym(ib):
             tries = tries[:1]       # both ends right at a symbol: the wire runs symbol to symbol, never stops short
         for A, B in tries:
             f = redraw(A if A is not None else P[0], B if B is not None else P[-1])
@@ -726,6 +746,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             res.lines.append(('wiring', [tx(*v) for v in P], False)); continue
         if f[0] == 'arc' and hA is not None and hB is not None:
             sym_wires.append((ia, ib, f)); continue          # drawn below, once wires that run together are matched up
+        # the wire kept its own end by a symbol (its spoke or tail went with the builder's symbol): join it on
+        for h, used_, pt in ((hA, A, P[0]), (hB, B, P[-1])):
+            if h is not None and used_ is None and 0.5 < float(np.hypot(*(pt - h))) <= 24:
+                emit(('line', tuple(h), tuple(pt)))
         emit(f)
     # Wires from side-by-side symbols (a double switch) to one symbol bow the same way, as parallel arcs.
     groups = {}

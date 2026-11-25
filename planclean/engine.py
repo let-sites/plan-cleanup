@@ -79,7 +79,8 @@ def usable_examples(page, profile, full, kept):
     out = []
     for ex in profile.symbols:
         w = getattr(ex, 'where', None) or []
-        if len(w) >= 4 and os.path.basename(str(w[0])) == name and int(w[1]) == page.number:
+        # (a fan's blades are the same whether the fan is optional or standard: still worth finding)
+        if ex.cls != 'fan' and len(w) >= 4 and os.path.basename(str(w[0])) == name and int(w[1]) == page.number:
             x, y, h = float(w[2]), float(w[3]), max(ex.half, 4.0)
             near = [p for p in full if abs((p['rect'].x0 + p['rect'].x1) / 2 - x) < h and abs((p['rect'].y0 + p['rect'].y1) / 2 - y) < h]
             if near and sum(id(p) not in kept_ids for p in near) >= 0.4 * len(near): continue
@@ -142,6 +143,34 @@ def same_drawing(hits, paths, texts=()):
     return out
 
 
+def fans_by_blades(hits, paths):
+    """A ceiling fan drawn as a small hub with four or more blade outlines around it is a fan, whatever the
+    builder's drawing looks like."""
+    def ctr(r): return (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+    hubs = [p for p in paths if len(p['items']) >= 12 and all(i[0] in ('l', 'c') for i in p['items'])
+            and 4 < p['rect'].width < 14 and abs(p['rect'].width - p['rect'].height) < 1.0]
+    longs = [p for p in paths if len(p['items']) >= 8 and 12 < max(p['rect'].width, p['rect'].height) < 45]
+    out = []
+    for hb in hubs:
+        hx, hy = ctr(hb['rect']); rad = hb['rect'].width / 2
+        blades, ext = [], 0.0
+        for p in longs:
+            if p is hb: continue
+            r = p['rect']
+            gap = math.hypot(max(0.0, r.x0 - hx, hx - r.x1), max(0.0, r.y0 - hy, hy - r.y1))
+            far = max(math.hypot(x - hx, y - hy) for x in (r.x0, r.x1) for y in (r.y0, r.y1))
+            # a blade starts by the hub and reaches well out, and is narrow across its length
+            pts = [p['items'][0][1]] + [i[-1] for i in p['items']]
+            near_pt = min(math.hypot(q.x - hx, q.y - hy) for q in pts)
+            if gap <= rad + 4 and near_pt <= rad + 6 and far >= rad + 12:
+                blades.append(p); ext = max(ext, far)
+        if len(blades) >= 4 and not any(math.hypot(h['x'] - hx, h['y'] - hy) < 8 and h['cls'] == 'fan' for h in hits + out):
+            out.append(dict(cls='fan', score=0.9, x=hx, y=hy, hw=min(ext, 45.0), hh=min(ext, 45.0), scores={}, blades=True))
+    if out:     # what read as something else on the hub or the blades is the fan
+        hits[:] = [h for h in hits if not any(math.hypot(h['x'] - f['x'], h['y'] - f['y']) < f['hw'] * 0.6 and h['cls'] not in ('switch', 'dimmer') for f in out)]
+    return out
+
+
 def typed_switches(texts, hits, profile):
     """A builder who types their switches (Pulte's 'S', 'S' with a small 3): every lone typed S is a switch,
     however well its picture matched. Only for builders whose taught switches are typed letters."""
@@ -195,6 +224,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     hits = detect.classify(img, region, usable_examples(page, profile, full, allp), anc, weak=0.12, weak_cls=OUTLET_CLS)
     hits += typed_switches(texts, hits, profile)
     hits += same_drawing(hits, [p for p in symbolish if role(p) == 'electrical'], texts)
+    hits += fans_by_blades(hits, [p for p in symbolish if role(p) == 'electrical'])
 
     # 2. text
     progress('Reading text')
@@ -551,6 +581,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         # the builder's symbol as big as the taught picture that matched it (a disk light with long spokes), else the usual size
         r = radius.get(h['cls'], 7.5)
         if h['cls'] == 'fan' and id(h) in hidden_ids: return max(r, min(h.get(k, 0), 30.0), 28.0)   # a left-off fan's blades reach far out
+        if h.get('blades'): return h[k] + 1.0                 # the fan's whole drawing, blades and all
         return max(r, min(h.get(k, 0) + 1.0, 16.0)) if h['cls'] not in ('switch', 'dimmer') else r   # +1: the match can sit a point off
     hidden_ids = {id(hits[i]) for i in hidden}
     hit_boxes = [(h['x'] - reach(h, 'hw'), h['y'] - reach(h, 'hh'), h['x'] + reach(h, 'hw'), h['y'] + reach(h, 'hh'))
@@ -706,6 +737,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         """The symbol a wire end belongs to: a symbol within reach, or a fan whose builder note the wire runs to."""
         if len(hxy):
             d = np.hypot(hxy[:, 0] - pt[0], hxy[:, 1] - pt[1]); d[~wire_ok] = 1e9
+            for j, h in enumerate(hits):          # a fan's blades were erased: its wires end where the blades began
+                if h.get('blades') and d[j] <= h['hw'] + 14: d[j] = min(d[j], ATTACH)
             i = int(d.argmin())
             if d[i] <= ATTACH:
                 # lights are wired to switches: a switch just beside an outlet takes the wire
@@ -785,7 +818,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                                     if not any(b[0] <= m[0] <= b[2] and b[1] <= m[1] <= b[3] for b in word_boxes): continue
                                 # close by, the wire may bend sharply; across a longer gap (where a word
                                 # was drawn over the wire) it must carry straight on
-                                if g <= gap and not (bi and bj): continue   # sharp bends only between curved runs
+                                if g <= gap and not (bi and bj):    # sharp bends only between curved runs; a straight run
+                                    c25 = math.cos(math.radians(25.0))     # joins only what carries straight on
+                                    if np.dot(da, -db) < c25 or (g > 0.3 and np.dot((pb - pa) / g, da) < c25): continue
                                 cm = cos_max if g <= gap else math.cos(math.radians(25.0))
                                 if np.dot(da, -db) < cm: continue
                                 if g > 0.3 and np.dot((pb - pa) / g, da) < cm: continue
@@ -821,7 +856,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 mid = (a + b) / 2
                 h = near_hit(tuple(mid), r)
                 # only where the wire carries on well past the symbol on both sides
-                cut = h >= 0 and wire_ok[h] and (sum(plen(x) for x in cur) > 20 or straight(np.vstack(cur))) and total - before > 20
+                # (through it: the break is at the symbol, not where the wire just passes by)
+                cut = h >= 0 and wire_ok[h] and float(np.hypot(*(mid - hxy[h]))) <= at_sym(h) + 4.0 and (sum(plen(x) for x in cur) > 20 or straight(np.vstack(cur))) and total - before > 20
                 before += plen(q)
                 if cut:
                     out.append(cur); cur = [q]

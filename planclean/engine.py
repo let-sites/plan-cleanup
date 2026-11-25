@@ -165,7 +165,8 @@ def fans_by_blades(hits, paths):
             if gap <= rad + 4 and near_pt <= rad + 6 and far >= rad + 12:
                 blades.append(p); ext = max(ext, far)
         if len(blades) >= 4 and not any(math.hypot(h['x'] - hx, h['y'] - hy) < 8 and h['cls'] == 'fan' for h in hits + out):
-            out.append(dict(cls='fan', score=0.9, x=hx, y=hy, hw=min(ext, 45.0), hh=min(ext, 45.0), scores={}, blades=True))
+            out.append(dict(cls='fan', score=0.9, x=hx, y=hy, hw=min(ext, 45.0), hh=min(ext, 45.0), scores={}, blades=True,
+                            parts={id(hb)} | {id(b) for b in blades}))
     if out:     # what read as something else on the hub or the blades is the fan
         hits[:] = [h for h in hits if not any(math.hypot(h['x'] - f['x'], h['y'] - f['y']) < f['hw'] * 0.6 and h['cls'] not in ('switch', 'dimmer') for f in out)]
     return out
@@ -584,6 +585,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if h.get('blades'): return h[k] + 1.0                 # the fan's whole drawing, blades and all
         return max(r, min(h.get(k, 0) + 1.0, 16.0)) if h['cls'] not in ('switch', 'dimmer') else r   # +1: the match can sit a point off
     hidden_ids = {id(hits[i]) for i in hidden}
+    fan_parts = set().union(*[h.get('parts', set()) for h in hits]) if hits else set()
     hit_boxes = [(h['x'] - reach(h, 'hw'), h['y'] - reach(h, 'hh'), h['x'] + reach(h, 'hw'), h['y'] + reach(h, 'hh'))
                  if not h.get('as_drawn') else (1e9, 1e9, 1e9, 1e9) for h in hits]
     room_ids = {id(w) for w in rooms}
@@ -674,6 +676,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if rl == 'remove': removed['removed pens'] += 1; continue
         if titles and rl != 'electrical' and (in_title[k] or underline(r)):
             removed['text strokes'] += 1; continue           # the builder's sheet title: written as clean text
+        if id(p) in fan_parts:
+            removed['symbol parts'] += 1; continue           # a fan's hub and blades (one can read as a bit of wall)
         if in_hit[k] and is_filled(p) and max(r.width, r.height) < 25:
             removed['symbol parts'] += 1; continue           # a filled symbol (smoke detector dot), whatever its pen
         if rl in ('electrical', 'misc', 'opening'):

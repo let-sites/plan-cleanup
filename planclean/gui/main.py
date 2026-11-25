@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont, QAction, QColor, QPixmap, QImage, QIcon, QKeySe
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog, QListWidget, QListWidgetItem, QDockWidget,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QInputDialog, QProgressDialog, QCheckBox, QToolBar, QLineEdit, QFormLayout, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView, QProgressBar, QToolButton, QToolTip)
+    QDialogButtonBox, QDoubleSpinBox, QAbstractItemView, QSplitter, QSizePolicy, QListView, QProgressBar, QToolButton, QToolTip, QMenu)
 
 from planclean import __version__
 from planclean.profile import Profile, Settings, safe_name
@@ -264,6 +264,9 @@ class MainWindow(QMainWindow):
         act(m, 'Zoom in', lambda: self.view.zoom(1.25), QKeySequence.ZoomIn)
         act(m, 'Zoom out', lambda: self.view.zoom(0.8), QKeySequence.ZoomOut)
         act(m, 'Show original on/off', lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
+        self.removed_act = act(m, 'Show what was removed', lambda: self.show_removed.setChecked(self.removed_act.isChecked()), 'X',
+                               tip='Show what the cleanup took off, in faded red, to check nothing went that should stay')
+        self.removed_act.setCheckable(True)
         m = mb.addMenu('Builders')
         act(m, 'Builders and what they show…', self.manage_builders, tip='See every builder; change what to show, rename, archive or delete')
         act(m, 'Teach this Builder…', self.open_teach, QKeySequence('Ctrl+T'), tip='All of this builder\'s taught symbols, to check, change or delete')
@@ -403,7 +406,7 @@ class MainWindow(QMainWindow):
         self.examples.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); self.examples.verticalHeader().hide()
         self.examples.setSelectionBehavior(QTableWidget.SelectRows)
         self.examples.setIconSize(QPixmap(56, 56).size()); sv.addWidget(self.examples, 1)
-        self.teach_tabs.addTab(sym_w, 'Symbols'); self.teach_tabs.addTab(role_w, 'Line types')
+        self.teach_tabs.addTab(sym_w, 'Symbols'); self.teach_tabs.addTab(role_w, 'Lines & layers')
         self.teach_tabs.currentChanged.connect(lambda i: i == 0 and self.roles.clearSelection())   # leaving line types: stop highlighting
         v.addWidget(self.teach_tabs, 1)
         self.examples.cellClicked.connect(self.goto_example)
@@ -449,7 +452,8 @@ class MainWindow(QMainWindow):
         v.addWidget(self._step(2, 'Check it and add it to the plan', 'Anything the app wasn\'t sure about is in <span style="color:#d00000">red</span> and listed below. '
                                'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
-        self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
+        self.summary.setProperty('kind', 'muted')
+        self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); self.show_removed.hide()   # state only: View ▸ Show what was removed (X)
         self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(lambda on: self.orig_btn.setChecked(on) if self.orig_btn.isChecked() != on else self.draw_result()); self.show_orig.hide()   # state only: the Show original (O) button is the control
         self.review_tabs = QTabWidget(); self.review_tabs.setObjectName('pilltabs')
         self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); self.review.setWordWrap(True)
@@ -457,24 +461,28 @@ class MainWindow(QMainWindow):
         self.flags.setToolTip('Things to fix by hand later. They go in the CHECK list in the DWG (never prints). Click one on the plan to change or delete it.')
         self.review_tabs.addTab(self.review, 'Needs a look'); self.review_tabs.addTab(self.flags, 'Flags')
         v.addWidget(self.review_tabs, 3)
-        row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
-        self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1); v.addLayout(row)
-        row = QHBoxLayout(); b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
+        # what to do with the selected symbol: only shown while one is selected
+        self.sel_box = QWidget(); sv = QVBoxLayout(self.sel_box); sv.setContentsMargins(0, 0, 0, 0)
+        self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
+        self.edit_type.setToolTip('What the selected symbol is'); self.edit_type.activated.connect(self.change_type); sv.addWidget(self.edit_type)
+        row = QHBoxLayout(); b = QPushButton('Delete'); b.setToolTip('Delete the selected symbol (Delete key)'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('⟳ Rotate'); b.setToolTip('Turn the selected symbol 90° (R; Shift+R turns it the other way)')
         b.clicked.connect(lambda: self.rotate_sel(1)); row.addWidget(b)
-        b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
-        row = QHBoxLayout(); row.addWidget(QLabel('This area is'))
-        self.area_type = QComboBox(); self.area_type.addItems(AREA_TYPES); row.addWidget(self.area_type, 1)
+        b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); sv.addLayout(row)
+        self.sel_box.hide(); v.addWidget(self.sel_box)
+        # what the area is, on one line: Electrical plan · Main (· which elevation, when the plan has more than one)
+        row = QHBoxLayout()
+        self.area_type = QComboBox(); self.area_type.addItems(AREA_TYPES); self.area_type.setToolTip('What this area is on the master template'); row.addWidget(self.area_type, 3)
         self.area_type.activated.connect(self.area_type_changed)
-        v.addLayout(row); row = QHBoxLayout()
-        self.for_lbl = QLabel('for'); row.addWidget(self.for_lbl); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
-                     'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 1); v.addLayout(row)
-        row = QHBoxLayout(); self.level_lbl = QLabel('Level'); row.addWidget(self.level_lbl)
+        self.level_lbl = QLabel('')                  # kept for older code paths; the level combo speaks for itself
         self.level_cb = QComboBox(); [self.level_cb.addItem(n, n) for n in LEVELS]
-        self.level_cb.setToolTip('Floors of one plan go side by side on the template, left to right: upper, main, lower. '
+        self.level_cb.setToolTip('Which floor. Floors of one plan go side by side on the template, left to right: upper, main, lower. '
                                  'It\'s read from the sheet title (2ND FLOOR, BASEMENT...); change it if it\'s wrong.')
-        row.addWidget(self.level_cb, 1); row.addStretch(2); v.addLayout(row)
-        self.area_type.currentTextChanged.connect(lambda t: (self.level_lbl.setVisible(t == 'Electrical plan'), self.level_cb.setVisible(t == 'Electrical plan')))
+        row.addWidget(self.level_cb, 2)
+        self.for_lbl = QLabel('')
+        self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
+                     'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 2); v.addLayout(row)
+        self.area_type.currentTextChanged.connect(lambda t: self.level_cb.setVisible(t == 'Electrical plan'))
         row = QHBoxLayout()
         self.sym_btn = QPushButton('Add Symbol'); self.sym_btn.setToolTip('For one it missed: click it on the plan, then pick what it is (it learns it, too)')
         self.sym_btn.clicked.connect(self.start_place_symbol); row.addWidget(self.sym_btn)
@@ -486,17 +494,20 @@ class MainWindow(QMainWindow):
         for b in (self.sym_btn, self.note_btn, self.flag_btn): b.setCheckable(True)
         self.view.modeChanged.connect(lambda m: [b.setChecked(m == 'place' and getattr(self, '_placing', '') == k)
                                                  for k, b in (('symbol', self.sym_btn), ('note', self.note_btn), ('flag', self.flag_btn))])
-        self.heights_btn = QPushButton('Ceiling heights from another sheet…')
-        self.heights_btn.setToolTip('Copy the ceiling heights from the floor plan sheet, lined up by the room names')
-        v.addLayout(row); self.heights_btn.clicked.connect(self.heights_from_sheet); v.addWidget(self.heights_btn)
+        v.addLayout(row)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area. When you\'re done, click <b>Export DWG</b> at the top right.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
         row = QHBoxLayout()
-        b = QPushButton('Redraw box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
-        b = QPushButton('Teach…'); b.setToolTip('Teach this Builder'); b.clicked.connect(self.open_teach); row.addWidget(b)
         b = QPushButton('Redo clean'); b.setToolTip('Run the cleanup again on the same box (after an update, say). Your changes to this area are lost.')
-        b.clicked.connect(self.start_over); row.addWidget(b); v.addLayout(row)
+        b.clicked.connect(self.start_over); row.addWidget(b)
+        more = QPushButton('More ▾'); more.setStyleSheet('QPushButton::menu-indicator{width:0;image:none}'); mm = QMenu(more)
+        mm.addAction('Redraw box', self.redraw_box)
+        self.heights_btn = mm.addAction('Ceiling heights from another sheet…', self.heights_from_sheet)
+        self.heights_btn.setToolTip('Copy the ceiling heights from the floor plan sheet, lined up by the room names')
+        mm.addSeparator(); mm.addAction('Teach this Builder…', self.open_teach)
+        mm.addAction('Show what was removed', lambda: self.removed_act.trigger())
+        more.setMenu(mm); row.addWidget(more); v.addLayout(row)
         return w
 
     def start_over(self):
@@ -740,7 +751,7 @@ class MainWindow(QMainWindow):
         self.roles.setRowCount(0); self.examples.setRowCount(0)
         if not self.profile or not self.sheet: return
         if self.sheet.kind == 'pdf':
-            self.roles_lbl.setText('Click a line type or layer to see it highlighted on the plan.'); self.teach_tabs.setTabText(1, 'Line types')
+            self.roles_lbl.setText('Click a line type or layer to see it highlighted on the plan.'); self.teach_tabs.setTabText(1, 'Lines & layers')
             self.sym_lbl.setText('Click one of each kind of symbol on the plan.'); self.teach_tabs.setTabText(0, 'Symbols')
             for ex in self.profile.symbols: self._example_row(ex)          # all of the builder's, box or no box
             self.teach_btn.setEnabled(True)
@@ -1084,8 +1095,9 @@ class MainWindow(QMainWindow):
         from collections import Counter
         c = Counter(s.cls for s in res.symbols)
         parts = ', '.join(f'{n} {sym_label(k).split(" (")[0].lower()}' for k, n in c.most_common())
-        self.summary.setText(f'<b>{len(res.symbols)} symbols:</b> {parts}.<br><b>{sum(1 for t in res.texts if t.kind == "room")} room names</b>, '
-                             f'{sum(1 for t in res.texts if t.kind == "note")} notes kept, {len(res.dropped_labels)} builder labels removed.')
+        self.summary.setText(f'{len(res.symbols)} symbols, {sum(1 for t in res.texts if t.kind == "room")} room names, '
+                             f'{sum(1 for t in res.texts if t.kind == "note")} notes')
+        self.summary.setToolTip(f'{parts}.\n{len(res.dropped_labels)} builder labels removed.')
         self.draw_result(); self.fill_review(); self._show_corner(True)
         self.save_btn.setEnabled(True)
         self._update_heights_btn()
@@ -1097,10 +1109,9 @@ class MainWindow(QMainWindow):
         elif elev: guess = 'Interior elevation' if is_elev(self.area_type.currentText()) and 'Interior' in self.area_type.currentText() else 'Exterior elevation'
         else: guess = 'Option' if any(t.kind == 'title' and 'OPT' in ' '.join(t.lines) for t in res.texts) else 'Electrical plan'
         if self.area_type.findText(guess) >= 0: self.area_type.setCurrentText(guess)
-        self.for_lbl.setVisible(not elev); self.elev_cb.setVisible(not elev)
+        self.elev_cb.setVisible(not elev and bool(self.plan and len(self.plan.elevations) > 1))
         if elev:
-            self.summary.setText(f'<b>Elevation.</b> {res.stats.get("removed", 0)} pieces of notes, dimensions, pitch marks and leaders taken off. '
-                                 'The building and its title are kept. Turn on <i>Show what was removed</i> to check.')
+            self.summary.setText(f'Elevation: {res.stats.get("removed", 0)} notes, dimensions and leaders taken off. Press X to see them.')
         self.elev_cb.clear(); self.elev_cb.addItem('first free elevation', '')
         for n in (self.plan.elevations if self.plan else []): self.elev_cb.addItem(n, n)
         if self.editing is not None and self.plan: ev = self.plan.items[self.editing].elevation
@@ -1180,6 +1191,7 @@ class MainWindow(QMainWindow):
         return self.sheet.to_view(*self.result.to_page(X, Y))
 
     def draw_result(self):
+        if hasattr(self, 'sel_box'): self.sel_box.setVisible(hasattr(getattr(self, '_sel', None), 'cls') and self.result is not None and getattr(self, '_sel', None) in self.result.symbols)
         if not self.result: return
         self.view.clear_overlay()
         self.view.page_item.setOpacity(0.45 if self.show_orig.isChecked() else 0.0)
@@ -1273,7 +1285,7 @@ class MainWindow(QMainWindow):
         if zoom: self.view.fitInView(QRectF(x - 8 * r, y - 5 * r, 16 * r, 10 * r), Qt.KeepAspectRatio)
 
     def on_pick(self, obj, zoom=False, ask=True):
-        self._sel = obj
+        self._sel = obj; self.sel_box.setVisible(hasattr(obj, 'cls'))
         if hasattr(obj, 'cls'):
             self.edit_type.setCurrentIndex(list(SYMBOL_TYPES).index(obj.cls))
             x, y = self._view_pt(obj.x, obj.y); self.highlight(x, y, zoom)
@@ -1498,7 +1510,7 @@ class MainWindow(QMainWindow):
         """The builder's own sheet already has ceiling heights: nothing to copy."""
         from planclean.heights import is_height
         has = bool(self.result) and any(t.kind == 'note' and is_height(' '.join(t.lines).upper()) for t in self.result.texts)
-        self.heights_btn.setVisible(bool(self.result) and self.result.stats.get('kind') != 'elevation' and not has)
+        self.heights_btn.setEnabled(bool(self.result) and self.result.stats.get('kind') != 'elevation' and not has)
 
     def rotate_sel(self, step=1):
         """Turn the selected symbol a quarter turn (step 1 clockwise, -1 the other way)."""

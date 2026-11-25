@@ -139,7 +139,23 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                 titles.append(w)
         titles = [w for w in titles if title_quality(w) >= 1.2]          # mostly real words, read with some confidence
     # a typed sheet title ('1 1ST LEVEL ELECTRICAL PLAN'): exact already
-    for w in [w for w in words if w.get('typed') and re.search(r'\bPLAN\b', w['n']) and re.search(r'ELEC|LIGHTING|POWER|LEVEL|FLOOR', w['n'])]:
+    # Only the big lettering: 'REFER TO STANDARD / ELECTRICAL PLAN FOR / MORE INFORMATION' in a note box is a note.
+    # The title's other big lines come with it ('OPT. CHEF'S KITCHEN' over 'ELECTRICAL PLAN').
+    fs = lambda w: w.get('fsize') or w['size']
+    seeds = [w for w in words if w.get('typed') and re.search(r'\bPLAN\b', w['n']) and re.search(r'ELEC|LIGHTING|POWER|LEVEL|FLOOR', w['n'])]
+    if seeds:
+        top = max(fs(w) for w in seeds); seeds = [w for w in seeds if fs(w) >= 0.8 * top]
+        grew = True
+        while grew:
+            grew = False
+            for w in words:
+                if not w.get('typed') or w in seeds or re.fullmatch(r'[\d ]+', w['n']) or w['n'].startswith('SCALE'): continue
+                for t in seeds:
+                    h = fs(t)
+                    if 0.8 * h <= fs(w) <= 1.25 * h and abs(w['cy'] - t['cy']) < 2.2 * h and \
+                            min(w['dbb'][2], t['dbb'][2]) - max(w['dbb'][0], t['dbb'][0]) > -2 * h:
+                        seeds.append(w); grew = True; break
+    for w in seeds:
         words.remove(w)
         if not any(ocr._overlap(w['bb'], t['bb']) > 0.4 for t in titles):
             w = dict(w); w['n'] = re.sub(r'^\d{1,2} +', '', w['n']); titles.append(w)     # less the detail number in front

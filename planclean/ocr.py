@@ -102,7 +102,8 @@ def typed_words(lines, page_rotation=0):
         dbb = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())
         ddx, ddy = _disp(*l['dir'], page_rotation)
         out.append(dict(text=l['text'], n=norm(l['text']), bb=tuple(bb), dbb=dbb, cx=(bb[0] + bb[2]) / 2, cy=(bb[1] + bb[3]) / 2,
-                        score=1.0, size=min(dbb[2] - dbb[0], dbb[3] - dbb[1]), vert=abs(ddy) > abs(ddx), typed=True))
+                        score=1.0, size=min(dbb[2] - dbb[0], dbb[3] - dbb[1]), vert=abs(ddy) > abs(ddx), typed=True,
+                        fsize=l.get('size', 0)))
     return out
 
 def _union(a, b):

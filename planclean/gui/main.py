@@ -1564,7 +1564,10 @@ class MainWindow(QMainWindow):
             else:
                 try: base = dxfout.open_template(tpl, oda.find_converter(self.settings.oda_path))
                 except Exception as e: QMessageBox.critical(self, 'Template', f'Could not read the master template:\n{e}'); return
-        default = str(Path(self.plan.files[0]).parent / f'{self.plan.name}.dwg') if self.plan.files else f'{self.plan.name}.dwg'   # next to the builder's PDF
+        fname = f'LET {self.plan.name}.dwg'
+        default = str(Path(self.plan.files[0]).parent / fname) if self.plan.files else fname   # next to the builder's PDF
+        if self.plan.dwg_path and Path(self.plan.dwg_path).stem == self.plan.name:      # saved before the LET name: same folder, new name
+            self.plan.dwg_path = str(Path(self.plan.dwg_path).with_name(f'LET {self.plan.name}{Path(self.plan.dwg_path).suffix}'))
         res, clear = None, True
         if base is not None:
             board = find_board(base)
@@ -1605,7 +1608,7 @@ class MainWindow(QMainWindow):
 
     def save_result(self):
         if not self.result: return
-        self._write(self.result, 'cleaned plan.dwg')
+        self._write(self.result, f'LET {self.plan.name}.dwg' if getattr(self, 'plan', None) else 'cleaned plan.dwg')
 
     def _write(self, res, default_name, layout=True, base=None, clear=True, quiet=False, path=None):
         """Write one drawing. path: save there without asking. Returns (path, missing blocks), or None."""

@@ -1329,7 +1329,8 @@ class MainWindow(QMainWindow):
         X, Y = self._to_drawing(*self.sheet.from_view(p.x(), p.y()))
         self.result.texts.append(Text('flag', [text.strip()], X, Y))
         self.draw_result(); self.fill_review(); self.review_tabs.setCurrentIndex(1); self.flags.setCurrentRow(self.flags.count() - 1)
-        self.statusBar().showMessage('Flagged. It\'s in the CHECK list when you export. ⌘Z to undo.', 4000)
+        self.view.set_mode('place', self.view.flag_cursor())          # keep flagging until Esc
+        self.statusBar().showMessage('Flagged. Click the next spot to flag, or Esc when you\'re done. ⌘Z to undo.')
 
     def heights_from_sheet(self):
         if not self.result or self.result.stats.get('kind') == 'elevation': return

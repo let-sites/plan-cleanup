@@ -1483,6 +1483,9 @@ class MainWindow(QMainWindow):
             x, y = self.result.to_page(s.x, s.y)
             ex, _ = self.teacher.example_at(x, y, s.cls)
             ex.learned = True
+            from planclean.detect import distinct
+            if ex not in distinct(self.profile.symbols + [ex]):      # it already knows one just like it
+                self.statusBar().showMessage(f'Already knows this {sym_label(s.cls).split(" (")[0].lower()}.', 4000); return
             self.profile.symbols.append(ex); self._example_row(ex); self._save_quietly()
             self.statusBar().showMessage(f'Learned: this {sym_label(s.cls).split(" (")[0].lower()} is saved for {self.profile.name}. '
                                          'Remove it on the Teach tab if that was a mistake.', 8000)

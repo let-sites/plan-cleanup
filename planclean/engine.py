@@ -90,6 +90,58 @@ def usable_examples(page, profile, full, kept):
 # a symbol's own label words (they describe the builder's symbol, which the clean one replaces)
 SYMBOL_LABELS = {'GFCI', 'AFCI', 'GFI', 'WP', 'DISK', 'CLG', 'TYP', 'WPGFI', 'GFIWP', 'LED', 'RECEP', 'EXH', 'SD', 'COSD'}
 
+def same_drawing(hits, paths, texts=()):
+    """A builder draws every copy of a symbol with the same stroke (Pulte: a 35-line ring with a tail for each disk
+    light). A path drawn exactly like the one under a sure hit, where nothing was found, is that symbol too (the
+    match missed it under cabinet lines or a wire). Only shapes that one kind of symbol uses."""
+    def sig(p):
+        return (len(p['items']), pen_key(p))
+    def size(p):
+        r = p['rect']; return sorted((r.width, r.height))
+    def centre(p):
+        pts = [p['items'][0][1]] + [i[-1] for i in p['items']]
+        return sum(q.x for q in pts) / len(pts), sum(q.y for q in pts) / len(pts)
+    lines1 = [p for p in paths if len(p['items']) == 1 and p['items'][0][0] == 'l']
+    def slashed(cx, cy, rad):
+        for q in lines1:
+            a, b = q['items'][0][1], q['items'][0][2]; dx, dy = abs(b.x - a.x), abs(b.y - a.y); L = math.hypot(dx, dy)
+            if L > 2 and min(dx, dy) > 0.3 * L and math.hypot((a.x + b.x) / 2 - cx, (a.y + b.y) / 2 - cy) < rad: return True
+        return False
+    cand = [p for p in paths if len(p['items']) >= 12 and all(i[0] in ('l', 'c') for i in p['items'])
+            and 4 < max(p['rect'].width, p['rect'].height) < 32]
+    ref = {}
+    for h in hits:
+        if h['score'] < 0.8 or h.get('typed') or h.get('weak'): continue
+        for p in cand:
+            cx, cy = centre(p); r = p['rect']
+            if math.hypot(cx - h['x'], cy - h['y']) <= 3.0 and r.width <= 2 * h.get('hw', 8) + 2 and r.height <= 2 * h.get('hh', 8) + 2:
+                ref.setdefault(sig(p), []).append((h, size(p)))
+    out = []
+    for p in cand:
+        w_, h_ = size(p)
+        hs = [h for h, (w2, h2) in ref.get(sig(p), []) if abs(w_ - w2) < 0.4 and abs(h_ - h2) < 0.4]
+        if not hs: continue
+        kinds = {h['cls'] for h in hs}
+        if len(kinds) != 1:
+            # one light drawn the same way on a wall and on a ceiling (Pulte's coach light and disk light):
+            # away from walls it is the ceiling kind
+            if not kinds <= {'wall_light', 'ceiling_light', 'disk_light'}: continue
+            hs = [h for h in hs if h['cls'] != 'wall_light'] or hs
+            if len({h['cls'] for h in hs}) != 1: continue
+            shared = True
+        else: shared = False
+        cx, cy = centre(p)
+        if any(math.hypot(h['x'] - cx, h['y'] - cy) < (4 if h['cls'] in ('switch', 'dimmer') else 8) for h in hits + out): continue
+        rad = max(p['rect'].width, p['rect'].height) / 2
+        if slashed(cx, cy, rad): continue        # a slashed circle is another symbol (DW)
+        if any(math.hypot((bb[0] + bb[2]) / 2 - cx, (bb[1] + bb[3]) / 2 - cy) < rad
+               for l in texts for c, bb in l['chars'] if c.strip()):
+            continue                             # a letter inside (CHIME's B, a thermostat's T): another symbol
+        h0 = hs[0]
+        out.append(dict(cls=h0['cls'], score=0.8, x=cx, y=cy, hw=h0.get('hw', 8), hh=h0.get('hh', 8), scores={}, copied=True, wall_or_ceiling=shared))
+    return out
+
+
 def typed_switches(texts, hits, profile):
     """A builder who types their switches (Pulte's 'S', 'S' with a small 3): every lone typed S is a switch,
     however well its picture matched. Only for builders whose taught switches are typed letters."""
@@ -142,6 +194,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     OUTLET_CLS = ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet')
     hits = detect.classify(img, region, usable_examples(page, profile, full, allp), anc, weak=0.12, weak_cls=OUTLET_CLS)
     hits += typed_switches(texts, hits, profile)
+    hits += same_drawing(hits, [p for p in symbolish if role(p) == 'electrical'], texts)
 
     # 2. text
     progress('Reading text')
@@ -234,7 +287,14 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         def _plain(p):
             if not straight_(p): return False
             if p.get('closePath') or any(i[0] in ('re', 'qu') for i in p['items']): return True
-            r = p['rect']; return max(r.width, r.height) * K >= 18.0
+            r = p['rect']
+            if max(r.width, r.height) * K < 18.0: return False
+            # a curve the CAD flattened into many short lines bends: it is a wire, not a straight building line
+            pts = [p['items'][0][1]] + [i[2] for i in p['items'] if i[0] == 'l']
+            if len(pts) >= 4:
+                a, b = pts[0], pts[-1]; L = math.hypot(b.x - a.x, b.y - a.y)
+                if L > 1 and max(abs((q.x - a.x) * (b.y - a.y) - (q.y - a.y) * (b.x - a.x)) / L for q in pts) > max(1.5, 0.05 * L): return False
+            return True
         plain = {id(p) for p in elec if id(p) not in paired and _plain(p)}
         role = lambda p: 'wall' if id(p) in paired else 'misc' if id(p) in plain else pen_role(p)
     # CAD layers, where the file has them: the electrical pen on a building or dimension layer (a door swing,
@@ -406,6 +466,28 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         for v in group[1:]: ocr._absorb(w, v)
         notes.append(w)
     notes = ocr.stack_lines(notes)
+    # a note about an outlet whose leader points at what reads as a light ('PRE WIRE FOR FUTURE OUTLET' at a J box):
+    # the builder's own symbol stays as drawn, with its letter; only its wires are redrawn
+    LIGHTS = ('ceiling_light', 'disk_light', 'wall_light', 'pendant')
+    for w in notes:
+        if 'OUTLET' not in ' '.join(w.get('lines', [w['n']])): continue
+        bb = w['bb']
+        def to_box(q): return math.hypot(max(0.0, bb[0] - q[0], q[0] - bb[2]), max(0.0, bb[1] - q[1], q[1] - bb[3]))
+        for p in pl:
+            it = p['items']
+            if not 1 <= len(it) <= 3 or any(i[0] != 'l' for i in it) or is_filled(p): continue
+            a, b = (it[0][1].x, it[0][1].y), (it[-1][-1].x, it[-1][-1].y)
+            if math.hypot(a[0] - b[0], a[1] - b[1]) < 10: continue
+            for near_, far_ in ((a, b), (b, a)):
+                if to_box(near_) > 6: continue
+                for h in hits:
+                    if h['cls'] in LIGHTS and math.hypot(h['x'] - far_[0], h['y'] - far_[1]) <= h.get('hw', 8) + 12:   # (its arrowhead between)
+                        h['as_drawn'] = True
+    for h in hits:
+        if h.get('as_drawn'):
+            for v in words:
+                if abs(v['cx'] - h['x']) <= h.get('hw', 8) and abs(v['cy'] - h['y']) <= h.get('hh', 8) and v not in notes:
+                    v = dict(v); v['lines'] = [v['n']]; notes.append(v)
 
     # builder settings: symbol kinds LET leaves off this builder's plans (their wires go too)
     OUTSIDE_ROOMS = ('GARAGE', 'TANDEM', 'PATIO', 'PORCH', 'DECK')
@@ -471,7 +553,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         if h['cls'] == 'fan' and id(h) in hidden_ids: return max(r, min(h.get(k, 0), 30.0), 28.0)   # a left-off fan's blades reach far out
         return max(r, min(h.get(k, 0) + 1.0, 16.0)) if h['cls'] not in ('switch', 'dimmer') else r   # +1: the match can sit a point off
     hidden_ids = {id(hits[i]) for i in hidden}
-    hit_boxes = [(h['x'] - reach(h, 'hw'), h['y'] - reach(h, 'hh'), h['x'] + reach(h, 'hw'), h['y'] + reach(h, 'hh')) for h in hits]
+    hit_boxes = [(h['x'] - reach(h, 'hw'), h['y'] - reach(h, 'hh'), h['x'] + reach(h, 'hw'), h['y'] + reach(h, 'hh'))
+                 if not h.get('as_drawn') else (1e9, 1e9, 1e9, 1e9) for h in hits]
     room_ids = {id(w) for w in rooms}
     word_boxes, word_boxes_ext = [], []
     for w in words:
@@ -694,6 +777,9 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
                                 bj = infos[j][0]; pb, db = infos[j][1][lj]
                                 g = float(np.hypot(*(pb - pa)))
                                 if g > reach: continue
+                                hm = near_hit(tuple((pa + pb) / 2), 20.0)
+                                if hm >= 0 and wire_ok[hm] and np.hypot(*((pa + pb) / 2 - hxy[hm])) <= at_sym(hm) + 1.0:
+                                    continue                 # two wires that meet at a symbol stay two wires
                                 if g > gap:                          # a longer gap only where a word was written over the wire
                                     m = (pa + pb) / 2
                                     if not any(b[0] <= m[0] <= b[2] and b[1] <= m[1] <= b[3] for b in word_boxes): continue
@@ -716,6 +802,18 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
         for seq in chains:
             if straight(np.vstack(seq)):
                 out.append(seq); continue                    # a straight dashed line (cabinet) stays whole
+            # a wire drawn to just touch a symbol's tail on its way past (one curve through two lights): split
+            # the stroke where it touches, so the cut below makes it two wires that both end at that symbol
+            seq2 = []
+            for q in seq:
+                cut_at = None
+                if len(q) >= 5 and len(hxy):
+                    D = np.hypot(q[1:-1, None, 0] - hxy[None, :, 0], q[1:-1, None, 1] - hxy[None, :, 1])
+                    j, i = np.unravel_index(int(D.argmin()), D.shape)
+                    if wire_ok[i] and D[j, i] <= at_sym(i) + 1.0 and 1 <= j + 1 <= len(q) - 2: cut_at = j + 1
+                if cut_at: seq2 += [q[:cut_at + 1], q[cut_at:]]
+                else: seq2.append(q)
+            seq = seq2
             cur = [seq[0]]
             total = sum(plen(q) for q in seq); before = plen(seq[0])
             for q in seq[1:]:
@@ -880,7 +978,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
 
     # 6. symbols in drawing units, facing into the room
     for hi, h in enumerate(hits):
-        if hi in hidden: continue
+        if hi in hidden or h.get('as_drawn'): continue
         X, Y = tx(h['x'], h['y'])
         s = Sym(cls=h['cls'], x=X, y=Y, score=round(h['score'], 3), mods=h['mods'], review=h.get('review', ''), src=(h['x'], h['y']), shape=h.get('shape', ''))
         rays = None

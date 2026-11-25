@@ -1197,12 +1197,26 @@ class MainWindow(QMainWindow):
     def _view_pt(self, X, Y):
         return self.sheet.to_view(*self.result.to_page(X, Y))
 
+    def _magenta_sheet(self):
+        pm = self.view.page_item.pixmap(); key = pm.cacheKey()
+        if getattr(self, '_mag', (None, None))[0] != key:
+            from PySide6.QtGui import QPainter, QPixmap
+            out = QPixmap(pm); p = QPainter(out)
+            p.setCompositionMode(QPainter.CompositionMode_Screen); p.fillRect(out.rect(), QColor('#ff00ff')); p.end()  # black lines -> magenta, white stays
+            self._mag = (key, out)
+        return self._mag[1]
+
     def draw_result(self):
         if hasattr(self, 'sel_box'): self.sel_box.setVisible(hasattr(getattr(self, '_sel', None), 'cls') and self.result is not None and getattr(self, '_sel', None) in self.result.symbols)
         if not self.result: return
         self.view.clear_overlay()
-        self.view.page_item.setOpacity(0.45 if self.show_orig.isChecked() else 0.0)
+        self.view.page_item.setOpacity(0.0)
         bg = self.view.scene_.addRect(self.view.sceneRect(), Qt.NoPen, QColor('white')); bg.setZValue(-1); self.view.overlay.append(bg)
+        if self.show_orig.isChecked():
+            # the builder's original in magenta under the cleaned plan, easy to tell apart when comparing
+            om = self.view.scene_.addPixmap(self._magenta_sheet()); om.setPos(self.view.page_item.pos())
+            om.setTransform(self.view.page_item.transform()); om.setZValue(-0.5); om.setOpacity(0.55)
+            self.view.overlay.append(om)
         polys = {}
         shapes = self.block_shapes()
         # wires end where your block's POINT says (e.g. the centre of a wall light's circle)

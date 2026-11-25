@@ -4,7 +4,7 @@ datas, binaries, hidden = [], [], []
 for pkg in ('rapidocr_onnxruntime', 'onnxruntime', 'ezdxf', 'pymupdf'):
     d, b, h = collect_all(pkg); datas += d; binaries += b; hidden += h
 
-datas += [('assets/icon.png', 'assets'), ('assets/chevron.svg', 'assets')]
+datas += [('assets/icon.png', 'assets'), ('assets/chevron.svg', 'assets'), ('assets/gear.svg', 'assets')]
 import sys
 ICON = 'assets/icon.icns' if sys.platform == 'darwin' else 'assets/icon.ico'
 a = Analysis(['run_plancleanup.py'], pathex=['.'], datas=datas, binaries=binaries, hiddenimports=hidden,

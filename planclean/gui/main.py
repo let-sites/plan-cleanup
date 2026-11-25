@@ -197,8 +197,12 @@ class MainWindow(QMainWindow):
         self.save_btn = _big('Export DWG', primary=True); self.save_btn.clicked.connect(self.save_plan_dwg); self.save_btn.setEnabled(False)
         self.save_btn.setToolTip('The last step: plans and options go on your master template, elevations in their own drawing')
         tb.addWidget(self.save_btn)
-        b = _big('\u2699\ufe0e'); b.setToolTip('Settings  (⌘,)'); b.setMinimumWidth(52)
-        b.setStyleSheet('QPushButton{font-size:26px;font-weight:400;padding:0px 14px}')
+        from .style import asset
+        g = asset('gear.svg')
+        b = _big('' if g else '\u2699\ufe0e'); b.setToolTip('Settings  (⌘,)')
+        if g: b.setIcon(QIcon(str(g))); b.setIconSize(QSize(24, 24))
+        side = self.save_btn.sizeHint().height()                     # a square, as tall as Export DWG
+        b.setStyleSheet('QPushButton{font-size:24px;font-weight:400;padding:0px}'); b.setFixedSize(side, side)
         b.clicked.connect(self.open_settings); tb.addWidget(b)
 
     def _menus(self):

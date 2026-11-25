@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
         act(m, 'Show original on/off', lambda: self.orig_btn.isVisible() and self.orig_btn.toggle())
         m = mb.addMenu('Builders')
         act(m, 'Builders and what they show…', self.manage_builders, tip='See every builder; change what to show, rename, archive or delete')
-        act(m, 'Teach this builder\'s symbols…', self.open_teach, QKeySequence('Ctrl+T'), tip='All of this builder\'s taught symbols, to check, change or delete')
+        act(m, 'Teach this Builder…', self.open_teach, QKeySequence('Ctrl+T'), tip='All of this builder\'s taught symbols, to check, change or delete')
 
     def _fill_recent(self):
         self.recent_menu.clear()
@@ -386,7 +386,7 @@ class MainWindow(QMainWindow):
                             'QToolButton:hover{background:#eef4f8}')
         helpb.clicked.connect(lambda: QToolTip.showText(helpb.mapToGlobal(helpb.rect().bottomLeft()), TEACH_HELP, helpb))
         row.addWidget(helpb); v.addLayout(row)
-        t = QLabel('Teach this builder\'s symbols'); t.setStyleSheet('font-size:18px;font-weight:700;margin:2px 0 4px 0'); v.addWidget(t)
+        t = QLabel('Teach this Builder'); t.setStyleSheet('font-size:18px;font-weight:700;margin:2px 0 4px 0'); v.addWidget(t)
         row = QHBoxLayout(); row.addWidget(QLabel('Drawing scale')); self.scale_cb = QComboBox(); self.scale_cb.addItems([s[0] for s in SCALES])
         self.scale_cb.currentIndexChanged.connect(self.on_scale); row.addWidget(self.scale_cb); v.addLayout(row)
         self.teach_tabs = QTabWidget(); self.teach_tabs.setObjectName('pilltabs')
@@ -494,7 +494,7 @@ class MainWindow(QMainWindow):
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
         row = QHBoxLayout()
         b = QPushButton('Redraw box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
-        b = QPushButton('Teach…'); b.setToolTip('Teach this builder\'s symbols'); b.clicked.connect(self.open_teach); row.addWidget(b)
+        b = QPushButton('Teach…'); b.setToolTip('Teach this Builder'); b.clicked.connect(self.open_teach); row.addWidget(b)
         b = QPushButton('Redo clean'); b.setToolTip('Run the cleanup again on the same box (after an update, say). Your changes to this area are lost.')
         b.clicked.connect(self.start_over); row.addWidget(b); v.addLayout(row)
         return w
@@ -744,8 +744,8 @@ class MainWindow(QMainWindow):
             self.sym_lbl.setText('Click one of each kind of symbol on the plan.'); self.teach_tabs.setTabText(0, 'Symbols')
             for ex in self.profile.symbols: self._example_row(ex)          # all of the builder's, box or no box
             self.teach_btn.setEnabled(True)
-            if not self.region: return
-            paths = [p for p in self.sheet.page.get_drawings() if in_region(p, self.region)]
+            area = self.region or tuple(self.sheet.page.rect)        # no box yet: the whole sheet
+            paths = [p for p in self.sheet.page.get_drawings() if in_region(p, area)]
             st = sorted(pens_in(paths).items(), key=lambda kv: -kv[1]['count'])
             for k, s in st:
                 self.profile.pen_roles.setdefault(k, 'misc')
@@ -801,7 +801,8 @@ class MainWindow(QMainWindow):
         cb.currentIndexChanged.connect(lambda i, e=ex: (setattr(e, 'cls', keys[i]), self._save_quietly())); self.examples.setCellWidget(r, 1, cb)
 
     def on_role_select(self):
-        if not self.sheet or self.sheet.kind != 'pdf' or not self.region: return
+        if not self.sheet or self.sheet.kind != 'pdf': return
+        area = self.region or tuple(self.sheet.page.rect)
         rows = {i.row() for i in self.roles.selectedItems()}
         if not rows: self._clear_role_highlight(); return
         key = self.roles.item(min(rows), 0).data(Qt.UserRole)
@@ -811,7 +812,7 @@ class MainWindow(QMainWindow):
         from planclean.vec import polylines, layer_key
         lay = key[6:] if key.startswith('layer:') else None
         for p in self.sheet.page.get_drawings():
-            if (layer_key(p) == lay if lay is not None else pen_key(p) == key) and in_region(p, self.region):
+            if (layer_key(p) == lay if lay is not None else pen_key(p) == key) and in_region(p, area):
                 for q in polylines(p): polys.append([self.sheet.to_view(*v) for v in q])
         self.view.add_paths(polys, '#ff2d55', 2); self.view.page_item.setOpacity(0.35)
 

@@ -283,6 +283,9 @@ class MainWindow(QMainWindow):
         tip = QLabel('Double-click an area to redo it'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
         self.items = QListWidget(); self.items.setObjectName('planitems'); self.items.itemDoubleClicked.connect(lambda it: self.open_item(self.items.row(it)))
         sv.addWidget(self.items, 2)
+        from PySide6.QtWidgets import QAbstractItemView
+        self.items.setDragDropMode(QAbstractItemView.InternalMove)        # drag an area up or down to reorder
+        self.items.model().rowsMoved.connect(lambda _p, a, _e, _d, row: QTimer.singleShot(0, lambda: self._item_dragged(a, row)))
         row = QHBoxLayout(); row.setSpacing(4)
         for txt, fn, tipx in [('Remove', self.remove_item, 'Take this area out of the plan')]:
             b = QPushButton(txt); b.setToolTip(tipx); b.clicked.connect(fn); row.addWidget(b)
@@ -612,6 +615,14 @@ class MainWindow(QMainWindow):
         self.plan.remove(i)
         if self.editing is not None: self.editing = None if self.editing == i else self.editing - (self.editing > i)
         self.fill_items()
+
+    def _item_dragged(self, i, row):
+        j = row - 1 if row > i else row                    # Qt counts the drop row before the item left
+        if not self.plan or i == j or not 0 <= j < len(self.plan.items): self.fill_items(); return
+        if self.editing is not None:
+            e = self.editing
+            self.editing = j if e == i else e - 1 if i < e <= j else e + 1 if j <= e < i else e
+        self.plan.move(i, j); self.fill_items(); self.items.setCurrentRow(j)
 
     def move_item(self, d):
         i = self.items.currentRow()

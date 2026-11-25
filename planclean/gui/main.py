@@ -70,6 +70,8 @@ def _context_png(page, x, y, half, around=7.0, zoom=3.0):
     cv2.rectangle(img, (c[0] - hh, c[1] - hh), (c[0] + hh, c[1] + hh), 120, 2)
     return img_to_b64(img)
 
+LAYER_ROLES = {"keep": "Keep", "remove": "Leave off"}
+
 class Worker(QObject):
     done = Signal(object); failed = Signal(str); progress = Signal(str)
     def __init__(self, fn): super().__init__(); self.fn = fn
@@ -392,7 +394,7 @@ class MainWindow(QMainWindow):
         role_w = QWidget(); rv = QVBoxLayout(role_w); rv.setContentsMargins(0, 8, 0, 0)
         self.roles_lbl = QLabel('Line types on this plan'); rv.addWidget(self.roles_lbl)
         self.roles = QTableWidget(0, 3); self.roles.setHorizontalHeaderLabels(['Line type', 'Count', 'What it is'])
-        self.roles.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch); self.roles.verticalHeader().hide()
+        self.roles.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch); self.roles.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents); self.roles.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed); self.roles.setColumnWidth(2, 175); self.roles.verticalHeader().hide()
         self.roles.itemSelectionChanged.connect(self.on_role_select); self.roles.cellClicked.connect(self._role_clicked)
         self.roles.setSelectionBehavior(QTableWidget.SelectRows); self.roles.setSelectionMode(QTableWidget.SingleSelection)
         rv.addWidget(self.roles, 1)
@@ -738,7 +740,7 @@ class MainWindow(QMainWindow):
         self.roles.setRowCount(0); self.examples.setRowCount(0)
         if not self.profile or not self.sheet: return
         if self.sheet.kind == 'pdf':
-            self.roles_lbl.setText('Click a line type to see it highlighted on the plan.'); self.teach_tabs.setTabText(1, 'Line types')
+            self.roles_lbl.setText('Click a line type or layer to see it highlighted on the plan.'); self.teach_tabs.setTabText(1, 'Line types')
             self.sym_lbl.setText('Click one of each kind of symbol on the plan.'); self.teach_tabs.setTabText(0, 'Symbols')
             for ex in self.profile.symbols: self._example_row(ex)          # all of the builder's, box or no box
             self.teach_btn.setEnabled(True)
@@ -748,6 +750,15 @@ class MainWindow(QMainWindow):
             for k, s in st:
                 self.profile.pen_roles.setdefault(k, 'misc')
                 self._role_row(k, s['count'], self.profile.pen_roles, PEN_ROLES)
+            # the builder's CAD layers, when the PDF kept them: a whole layer can be left off (optional items)
+            from collections import Counter
+            from planclean.vec import layer_key
+            lay = Counter(layer_key(p) for p in paths if layer_key(p))
+            if lay:
+                r = self.roles.rowCount(); self.roles.insertRow(r)
+                h = QTableWidgetItem('Drawing layers'); h.setFlags(Qt.ItemIsEnabled); f = h.font(); f.setBold(True); h.setFont(f)
+                self.roles.setItem(r, 0, h); self.roles.setSpan(r, 0, 1, 3)
+                for k, n in lay.most_common(): self._role_row(k, n, self.profile.pdf_layer_roles, LAYER_ROLES, default='keep', layer=True)
         else:
             layers, blocks = dwgin.inventory(self.sheet.doc)
             self.roles_lbl.setText('Layers in this drawing'); self.teach_tabs.setTabText(1, 'Layers')
@@ -756,9 +767,10 @@ class MainWindow(QMainWindow):
             for k, n in blocks.most_common(): self._block_row(k, n)
             self.teach_btn.setEnabled(False)
 
-    def _role_row(self, key, count, store, roles, default='misc'):
+    def _role_row(self, key, count, store, roles, default='misc', layer=False):
         r = self.roles.rowCount(); self.roles.insertRow(r)
-        it = QTableWidgetItem(key); it.setData(Qt.UserRole, key); self.roles.setItem(r, 0, it)
+        it = QTableWidgetItem(key.split('|')[-1] if layer else key); it.setData(Qt.UserRole, ('layer:' + key) if layer else key)
+        it.setToolTip(key); self.roles.setItem(r, 0, it)
         self.roles.setItem(r, 1, QTableWidgetItem(str(count)))
         cb = QComboBox(); cb.addItems(list(roles.values()))
         cb.setCurrentIndex(list(roles).index(store.get(key, default)))
@@ -793,11 +805,13 @@ class MainWindow(QMainWindow):
         rows = {i.row() for i in self.roles.selectedItems()}
         if not rows: self._clear_role_highlight(); return
         key = self.roles.item(min(rows), 0).data(Qt.UserRole)
+        if not key: self._clear_role_highlight(); return
         self.view.clear_overlay()
         polys = []
-        from planclean.vec import polylines
+        from planclean.vec import polylines, layer_key
+        lay = key[6:] if key.startswith('layer:') else None
         for p in self.sheet.page.get_drawings():
-            if pen_key(p) == key and in_region(p, self.region):
+            if (layer_key(p) == lay if lay is not None else pen_key(p) == key) and in_region(p, self.region):
                 for q in polylines(p): polys.append([self.sheet.to_view(*v) for v in q])
         self.view.add_paths(polys, '#ff2d55', 2); self.view.page_item.setOpacity(0.35)
 

@@ -34,6 +34,14 @@ def pen_key(path) -> str:
         return f"fill #{c[0]:02x}{c[1]:02x}{c[2]:02x}"
     return f"{w:.2f} #{c[0]:02x}{c[1]:02x}{c[2]:02x}"
 
+def layer_key(path) -> str:
+    return path.get('layer') or ''
+
+def drop_layers(paths, profile):
+    """Leave out what's drawn on the builder PDF layers set to Leave off (optional items, say)."""
+    off = {k for k, v in (getattr(profile, 'pdf_layer_roles', None) or {}).items() if v == 'remove'}
+    return [p for p in paths if layer_key(p) not in off] if off else paths
+
 def is_filled(path):
     return path['type'] in ('f', 'fs')
 

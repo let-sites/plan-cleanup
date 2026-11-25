@@ -60,6 +60,7 @@ class Profile:
     room_text_min_size: float = 10.0        # text height in points
     dwg_block_map: dict = field(default_factory=dict)   # builder DWG block name -> symbol type
     dwg_layer_roles: dict = field(default_factory=dict) # builder DWG layer -> pen role
+    pdf_layer_roles: dict = field(default_factory=dict) # builder PDF layer -> 'keep' | 'remove' (e.g. Pulte's A-FP-OPTION: optional items)
     # what LET's finished plan shows for this builder
     outlets: str = 'all'                    # 'all' | 'outside' (exterior and garage only) | 'none'
     detectors: bool = True                  # smoke and smoke/CO detectors

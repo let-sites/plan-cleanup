@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib, math, re
 import numpy as np
 from . import wiring, detect, ocr
-from .vec import sample_lines_dir, polylines, pen_key, in_region, sample_lines, is_filled, page_text, text_anchors
+from .vec import drop_layers, sample_lines_dir, polylines, pen_key, in_region, sample_lines, is_filled, page_text, text_anchors
 from .profile import Profile, NOTE_WORDS
 from .result import Result, Sym, Text, turn_sym
 from .symbols import ORIENTED
@@ -75,7 +75,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     def tx(x, y): return ((x - x0) * K, -(y - y0) * K)
     res = Result(); res.to_page = lambda X, Y: (X / K + x0, -Y / K + y0)
     progress('Reading the sheet')
-    allp = page_paths(page)
+    allp = drop_layers(page_paths(page), profile)
     pl = [p for p in allp if in_region(p, region)]
     for ex in exclude:
         pl = [p for p in pl if not in_region(p, ex)]

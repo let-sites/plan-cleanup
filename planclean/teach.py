@@ -16,7 +16,8 @@ class Teacher:
     """Keeps the rendered symbol image for one sheet so clicks can be turned into examples."""
     def __init__(self, page, region, profile: Profile):
         self.page, self.region, self.profile = page, region, profile
-        self.paths = [p for p in page.get_drawings() if in_region(p, region)]
+        from .vec import drop_layers
+        self.paths = [p for p in drop_layers(page.get_drawings(), profile) if in_region(p, region)]
         self.texts = page_text(page, region)
         self.refresh()
 

@@ -389,7 +389,7 @@ class MainWindow(QMainWindow):
         if not self.profile: QMessageBox.information(self, 'Teach symbols', 'Start or open a plan first.'); return
         self._teach_from = self.tabs.currentIndex() if self.tabs.currentIndex() != 1 else 0
         self.tabs.setCurrentIndex(1)
-        # from the review: Done goes back to it, your fixes kept (Start over cleans again with what you taught)
+        # from the review: Done goes back to it, your fixes kept (Redo clean cleans again with what you taught)
         self.teach_done.setText('Done: back to the review' if self.result else 'Done: save and clean the area')
         if self.region: self.view.clear_overlay(); self.view.page_item and self.view.page_item.setOpacity(1.0); self.view.set_mode('teach')
         self.show_ex_markers()
@@ -410,7 +410,7 @@ class MainWindow(QMainWindow):
     def save_and_clean(self):
         self.save_profile()
         if self.result:                 # came from the review: don't throw away the fixes made there
-            self.close_teach(); self.statusBar().showMessage('Saved. Click Start over to clean this area again with the symbols you taught.', 8000); return
+            self.close_teach(); self.statusBar().showMessage('Saved. Click Redo clean to clean this area again with the symbols you taught.', 8000); return
         self.view.remove_ex_marker(); self._picked_ex = None
         self.run_clean()
 
@@ -465,12 +465,12 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         b = QPushButton('Redraw box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
         b = QPushButton('Teach…'); b.setToolTip('Teach this builder\'s symbols'); b.clicked.connect(self.open_teach); row.addWidget(b)
-        b = QPushButton('Start over'); b.setToolTip('Run the cleanup again on the same box. Your changes are lost.')
+        b = QPushButton('Redo clean'); b.setToolTip('Run the cleanup again on the same box (after an update, say). Your changes to this area are lost.')
         b.clicked.connect(self.start_over); row.addWidget(b); v.addLayout(row)
         return w
 
     def start_over(self):
-        if QMessageBox.question(self, 'Start over', 'Run the cleanup again on the same box?\n\nAny changes you made in the review will be lost.') == QMessageBox.Yes:
+        if QMessageBox.question(self, 'Redo clean', 'Run the cleanup again on the same box?\n\nAny changes you made in the review will be lost.') == QMessageBox.Yes:
             self.run_clean()
 
     def redraw_box(self):

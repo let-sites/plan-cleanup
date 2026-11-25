@@ -184,7 +184,7 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     # 4. leaders: strokes that start at a removed note and slant (or end in an arrowhead) toward the
     #    building, plus the arrowheads at their tips. A straight siding course or post that merely
     #    passes a note isn't one.
-    heads = [rects[i] for i, p in enumerate(pl) if is_filled(p) and pen_key(p) != 'fill #ffffff' and max(rects[i][2] - rects[i][0], rects[i][3] - rects[i][1]) < 8]
+    heads = [rects[i] for i, p in enumerate(pl) if is_filled(p) and pen_key(p) != 'fill #ffffff' and max(rects[i][2] - rects[i][0], rects[i][3] - rects[i][1]) < 16]   # arrowheads: Pulte's are about 12 pt long
     def slanted(p):
         for it in p['items']:
             a, b = it[1] * M, it[2] * M
@@ -238,7 +238,7 @@ def clean_elevation(page, region, inches_per_pt, progress=lambda m: None) -> Res
     for i, p in enumerate(pl):
         if i in gone or i in below or not is_filled(p): continue
         r = rects[i]
-        if max(r[2] - r[0], r[3] - r[1]) < 8 and any(_near(pt, r, 2.5) for pt in tips): gone.add(i)
+        if max(r[2] - r[0], r[3] - r[1]) < 16 and any(_near(pt, r, 2.5) for pt in tips): gone.add(i)
 
     if text_lines:
         lettering = set()
@@ -294,9 +294,9 @@ def _typed_title_lines(typed, M, Ybot):
         r = pymupdf.Rect(w['bb']) * M; r.normalize(); return (r.x0, r.y0, r.x1, r.y1)
     items = [(w['n'].upper().strip(), box(w), w) for w in typed if not w['vert']]
     fs = lambda it: it[2].get('fsize') or (it[1][3] - it[1][1])
-    heads = [it for it in items if re.search(r'\bELEV', it[0]) and it[1][1] >= Ybot - 4]
+    heads = [it for it in items if re.search(r'\bELEV', it[0])]       # the title's line (its underline can be the outline pen, so not 'under Ybot')
     if not heads: return [], []
-    head = max(heads, key=fs); h = fs(head)
+    head = max(heads, key=lambda it: (fs(it), it[1][1])); h = fs(head)
     lines = [head]
     for it in sorted(items, key=lambda z: abs(z[1][1] - head[1][1])):
         if it in lines or re.search(r'SCALE', it[0]) or re.fullmatch(r'[\d ]+', it[0]): continue

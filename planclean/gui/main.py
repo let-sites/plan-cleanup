@@ -308,13 +308,17 @@ class MainWindow(QMainWindow):
     def _docks(self):
         self.pages = QListWidget(); self.pages.setObjectName('sheets'); self.pages.setFixedWidth(190)
         self.pages.currentRowChanged.connect(self.on_page)
+        # clicking the sheet you're on (in the review, say) goes back to that sheet, ready for the next box
+        self.pages.itemClicked.connect(lambda it: (self.result is not None or self.editing is not None or self.tabs.currentIndex() != 0)
+                                       and self.on_page(self.pages.row(it)))
         side = QWidget(); sv = QVBoxLayout(side); sv.setContentsMargins(10, 10, 6, 10)
         hdr = QLabel('<b>Sheets</b>'); hdr.setStyleSheet('font-size:15px'); sv.addWidget(hdr)
         tip = QLabel('Use ↑ ↓ to flip through'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
         sv.addWidget(self.pages, 3)
         hdr = QLabel('<b>In this plan</b>'); hdr.setStyleSheet('font-size:15px;margin-top:8px'); sv.addWidget(hdr)
-        tip = QLabel('Double-click an area to redo it'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
-        self.items = QListWidget(); self.items.setObjectName('planitems'); self.items.itemDoubleClicked.connect(lambda it: self.open_item(self.items.row(it)))
+        tip = QLabel('Click an area to open it'); tip.setProperty('kind', 'muted'); sv.addWidget(tip)
+        self.items = QListWidget(); self.items.setObjectName('planitems')
+        self.items.itemClicked.connect(lambda it: self.items.row(it) != self.editing and self.open_item(self.items.row(it)))
         sv.addWidget(self.items, 2)
         from PySide6.QtWidgets import QAbstractItemView
         self.items.setDragDropMode(QAbstractItemView.InternalMove)        # drag an area up or down to reorder

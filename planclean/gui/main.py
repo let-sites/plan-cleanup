@@ -773,7 +773,10 @@ class MainWindow(QMainWindow):
                 r = self.roles.rowCount(); self.roles.insertRow(r)
                 h = QTableWidgetItem('Drawing layers'); h.setFlags(Qt.ItemIsEnabled); f = h.font(); f.setBold(True); h.setFont(f)
                 self.roles.setItem(r, 0, h); self.roles.setSpan(r, 0, 1, 3)
-                for k, n in lay.most_common(): self._role_row(k, n, self.profile.pdf_layer_roles, LAYER_ROLES, default=layer_default(k), layer=True)
+                from planclean.vec import option_wire_layers
+                wires = option_wire_layers(self.sheet.page.get_drawings())     # the options' own wiring: left off too
+                for k, n in lay.most_common(): self._role_row(k, n, self.profile.pdf_layer_roles, LAYER_ROLES,
+                                                              default='remove' if k in wires else layer_default(k), layer=True)
         else:
             layers, blocks = dwgin.inventory(self.sheet.doc)
             self.roles_lbl.setText('Layers in this drawing'); self.teach_tabs.setTabText(1, 'Layers')
@@ -789,7 +792,7 @@ class MainWindow(QMainWindow):
         self.roles.setItem(r, 1, QTableWidgetItem(str(count)))
         cb = QComboBox(); cb.addItems(list(roles.values()))
         cb.setCurrentIndex(list(roles).index(store.get(key, default)))
-        cb.currentIndexChanged.connect(lambda i, k=key: store.__setitem__(k, list(roles)[i]))
+        cb.currentIndexChanged.connect(lambda i, k=key: (store.__setitem__(k, list(roles)[i]), self.profile and self.save_profile()))   # saved straight away
         self.roles.setCellWidget(r, 2, cb)
 
     def _block_row(self, name, count):

@@ -41,12 +41,44 @@ def layer_default(name):
     """A CAD layer named for options (Pulte's A-FP-OPTION) holds optional items: left off unless set to Keep."""
     return 'remove' if 'OPTION' in name.upper() else 'keep'
 
+def option_wire_layers(paths):
+    """Layers that only carry the optional items' wiring (Pulte's bare A-FP-DASH-BELOW): a layer whose dashed runs
+    are all curved like wires, and which runs into the optional items' own layer."""
+    from collections import defaultdict
+    from . import wiring
+    by = defaultdict(list)
+    for p in paths: by[layer_key(p)].append(p)
+    opt = [p for k, ps in by.items() if k and layer_default(k) == 'remove' for p in ps]
+    if not opt: return set()
+    pts = np.array([v for p in opt for q in polylines(p) for v in q], float).reshape(-1, 2)
+    cell = {}
+    for x, y in pts: cell.setdefault((int(x // 4), int(y // 4)), []).append((x, y))
+    def touches(v):
+        cx, cy = int(v[0] // 4), int(v[1] // 4)
+        return any(abs(x - v[0]) < 3 and abs(y - v[1]) < 3 for i in (-1, 0, 1) for j in (-1, 0, 1) for x, y in cell.get((cx + i, cy + j), ()))
+    out = set()
+    for k, ps in by.items():
+        if not k or layer_default(k) == 'remove' or k.upper().split('|')[-1].startswith('E-'): continue
+        pieces = [np.array(q, float) for p in ps for q in polylines(p) if len(q) >= 2]
+        if not any(touches(q[0]) or touches(q[-1]) for q in pieces): continue
+        n = c = 0
+        for seq in wiring.chain(pieces, gap=5.0):
+            P = np.vstack(seq); C = P[-1] - P[0]; Lc = float(np.hypot(*C)); length = float(np.sum(np.hypot(*np.diff(P, axis=0).T)))
+            if length < 20 or len(seq) < 3: continue
+            n += 1
+            bow = float(np.abs((P - P[0]) @ (np.array([-C[1], C[0]]) / Lc)).max()) if Lc > 1 else length
+            c += bow >= max(2.0, 0.08 * Lc)
+        if n >= 3 and c >= 0.8 * n: out.add(k)
+    return out
+
 def drop_layers(paths, profile):
-    """Leave out what's drawn on the builder PDF layers set to Leave off (optional items, say)."""
+    """Leave out what's drawn on the builder PDF layers set to Leave off (optional items, say). Unless set,
+    a layer named for options, and a layer carrying only the options' wiring, are left off."""
     roles = getattr(profile, 'pdf_layer_roles', None) or {}
+    wires = option_wire_layers(paths) if any(layer_key(p) for p in paths[:2000]) else set()
     off = {}
     def is_off(k):
-        if k not in off: off[k] = bool(k) and roles.get(k, layer_default(k)) == 'remove'
+        if k not in off: off[k] = bool(k) and roles.get(k, 'remove' if k in wires else layer_default(k)) == 'remove'
         return off[k]
     return [p for p in paths if not is_off(layer_key(p))]
 

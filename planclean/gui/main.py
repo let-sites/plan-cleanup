@@ -284,14 +284,14 @@ class MainWindow(QMainWindow):
         self.items = QListWidget(); self.items.setObjectName('planitems'); self.items.itemDoubleClicked.connect(lambda it: self.open_item(self.items.row(it)))
         sv.addWidget(self.items, 2)
         row = QHBoxLayout(); row.setSpacing(4)
-        for txt, fn, tipx in [('↑', lambda: self.move_item(-1), 'Move up (earlier in the drawing)'), ('↓', lambda: self.move_item(1), 'Move down'),
-                              ('Remove', self.remove_item, 'Take this area out of the plan')]:
+        for txt, fn, tipx in [('Remove', self.remove_item, 'Take this area out of the plan')]:
             b = QPushButton(txt); b.setToolTip(tipx); b.clicked.connect(fn); row.addWidget(b)
         sv.addLayout(row)
         row = QHBoxLayout(); row.setSpacing(4)
         b = QPushButton('Add files…'); b.setToolTip('Add more of the builder\'s PDFs or DWGs to this plan'); b.clicked.connect(self.add_files); row.addWidget(b)
         sv.addLayout(row)
         self.saved_lbl = QLabel(''); self.tpl_lbl = QLabel('')       # not shown: the panel stays uncluttered
+        self.pages.setFixedWidth(QWIDTH := 170); side.setFixedWidth(QWIDTH + 16)        # narrow: the plan gets the room
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(side); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.addDockWidget(Qt.LeftDockWidgetArea, d); self.sheet_dock = d
         self._thumb_queue = []; self._thumb_timer = QTimer(self); self._thumb_timer.timeout.connect(self._next_thumb)
@@ -299,9 +299,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_area(), 'Plan area')
         self.tabs.addTab(self._tab_setup(), 'Builder setup')
         self.tabs.addTab(self._tab_review(), 'Review')
+        self.tabs.currentChanged.connect(self._fit_panel)
         self.tabs.currentChanged.connect(lambda i: i == 1 and self.region and self.view.mode != 'teach' and (self.view.set_mode('teach'), self.show_ex_markers()))
         d = QDockWidget('', self); d.setTitleBarWidget(QWidget()); d.setWidget(self.tabs); d.setFeatures(QDockWidget.NoDockWidgetFeatures)
-        self.addDockWidget(Qt.RightDockWidgetArea, d)
+        self.addDockWidget(Qt.RightDockWidgetArea, d); self.right_dock = d; self._fit_panel(self.tabs.currentIndex())
+
+    def _fit_panel(self, i):
+        """Step 1 needs little room, so the plan gets it; the review and Teach pages need their buttons."""
+        w = 300 if i == 0 else 360 if i == 2 else 430
+        self.tabs.setMinimumWidth(w); self.tabs.setMaximumWidth(w if i == 0 else 16777215)
+        if getattr(self, 'right_dock', None) is not None: self.resizeDocks([self.right_dock], [w], Qt.Horizontal)
 
     def _step(self, n, title, text):
         l = QLabel(f'<div style="font-size:12px;color:#4a90b8;font-weight:700;letter-spacing:1px">STEP {n} OF 2</div>' if n else '<div></div>'
@@ -405,27 +412,28 @@ class MainWindow(QMainWindow):
         self.run_clean()
 
     def _tab_review(self):
-        w = QWidget(); v = QVBoxLayout(w)
+        w = QWidget(); v = QVBoxLayout(w); w.setObjectName('reviewtab'); w.setStyleSheet('#reviewtab QPushButton{padding:7px 8px}')
         v.addWidget(self._step(2, 'Check it and add it to the plan', 'Anything the app wasn\'t sure about is in <span style="color:#d00000">red</span> and listed below. '
                                'Click an item to jump to it, then change its type, delete it, or mark it as right.'))
         self.summary = QLabel(''); self.summary.setWordWrap(True); v.addWidget(self.summary)
         self.show_removed = QCheckBox('Show what was removed (faded red)'); self.show_removed.toggled.connect(self.draw_result); v.addWidget(self.show_removed)
         self.show_orig = QCheckBox('Show the builder\'s whole sheet underneath'); self.show_orig.setChecked(False); self.show_orig.toggled.connect(lambda on: self.orig_btn.setChecked(on) if self.orig_btn.isChecked() != on else self.draw_result()); self.show_orig.hide()   # state only: the Show original (O) button is the control
         self.review_tabs = QTabWidget(); self.review_tabs.setObjectName('pilltabs')
-        self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item)
-        self.flags = QListWidget(); self.flags.itemClicked.connect(lambda it: self.on_pick(it.data(Qt.UserRole), zoom=True, ask=False))
+        self.review = QListWidget(); self.review.itemClicked.connect(self.on_review_item); self.review.setWordWrap(True)
+        self.flags = QListWidget(); self.flags.setWordWrap(True); self.flags.itemClicked.connect(lambda it: self.on_pick(it.data(Qt.UserRole), zoom=True, ask=False))
         self.flags.setToolTip('Things to fix by hand later. They go in the CHECK list in the DWG (never prints). Click one on the plan to change or delete it.')
         self.review_tabs.addTab(self.review, 'Needs a look'); self.review_tabs.addTab(self.flags, 'Flags')
         v.addWidget(self.review_tabs, 3)
         row = QHBoxLayout(); self.edit_type = QComboBox(); self.edit_type.addItems([v_[0] for v_ in SYMBOL_TYPES.values()])
-        self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1)
-        b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
+        self.edit_type.activated.connect(self.change_type); row.addWidget(self.edit_type, 1); v.addLayout(row)
+        row = QHBoxLayout(); b = QPushButton('Delete'); b.clicked.connect(self.delete_sel); row.addWidget(b)
         b = QPushButton('⟳ Rotate'); b.setToolTip('Turn the selected symbol 90° (R; Shift+R turns it the other way)')
         b.clicked.connect(lambda: self.rotate_sel(1)); row.addWidget(b)
         b = QPushButton('Looks right'); b.clicked.connect(self.ok_sel); row.addWidget(b); v.addLayout(row)
         row = QHBoxLayout(); row.addWidget(QLabel('This area is'))
         self.area_type = QComboBox(); self.area_type.addItems(AREA_TYPES); row.addWidget(self.area_type, 1)
         self.area_type.activated.connect(self.area_type_changed)
+        v.addLayout(row); row = QHBoxLayout()
         self.for_lbl = QLabel('for'); row.addWidget(self.for_lbl); self.elev_cb = QComboBox(); self.elev_cb.setToolTip('Which elevation\'s box it goes in on the master template. '
                      'Include the elevation name in your box and it\'s picked for you.'); row.addWidget(self.elev_cb, 1); v.addLayout(row)
         row = QHBoxLayout(); self.level_lbl = QLabel('Level'); row.addWidget(self.level_lbl)
@@ -435,9 +443,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.level_cb, 1); row.addStretch(2); v.addLayout(row)
         self.area_type.currentTextChanged.connect(lambda t: (self.level_lbl.setVisible(t == 'Electrical plan'), self.level_cb.setVisible(t == 'Electrical plan')))
         row = QHBoxLayout()
-        self.sym_btn = QPushButton('Add a symbol'); self.sym_btn.setToolTip('For one it missed: click it on the plan, then pick what it is (it learns it, too)')
+        self.sym_btn = QPushButton('Add Symbol'); self.sym_btn.setToolTip('For one it missed: click it on the plan, then pick what it is (it learns it, too)')
         self.sym_btn.clicked.connect(self.start_place_symbol); row.addWidget(self.sym_btn)
-        self.note_btn = QPushButton('Add a note'); self.note_btn.setToolTip('Click on the plan where it goes, then type it (a ceiling height, say)')
+        self.note_btn = QPushButton('Add Note'); self.note_btn.setToolTip('Click on the plan where it goes, then type it (a ceiling height, say)')
         self.note_btn.clicked.connect(self.start_place_note); row.addWidget(self.note_btn)
         self.flag_btn = QPushButton('⚑ Flag'); self.flag_btn.setToolTip('Mark something to fix later in CAD (F): click the spot, then type what. '
                                                                        'It goes in the numbered CHECK list in the DWG, which never prints')
@@ -447,13 +455,13 @@ class MainWindow(QMainWindow):
                                                  for k, b in (('symbol', self.sym_btn), ('note', self.note_btn), ('flag', self.flag_btn))])
         self.heights_btn = QPushButton('Ceiling heights from another sheet…')
         self.heights_btn.setToolTip('Copy the ceiling heights from the floor plan sheet, lined up by the room names')
-        self.heights_btn.clicked.connect(self.heights_from_sheet); row.addWidget(self.heights_btn); v.addLayout(row)
+        v.addLayout(row); self.heights_btn.clicked.connect(self.heights_from_sheet); v.addWidget(self.heights_btn)
         self.add_btn = _big('Add to plan', primary=True); self.add_btn.clicked.connect(self.add_to_plan); v.addWidget(self.add_btn)
         self.add_hint = QLabel('Then box the next area. When you\'re done, click <b>Export DWG</b> at the top right.'); self.add_hint.setProperty('kind', 'muted')
         self.add_hint.setWordWrap(True); v.addWidget(self.add_hint)
         row = QHBoxLayout()
-        b = QPushButton('Redraw the box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
-        b = QPushButton('Teach symbols…'); b.clicked.connect(self.open_teach); row.addWidget(b)
+        b = QPushButton('Redraw box'); b.clicked.connect(self.redraw_box); row.addWidget(b)
+        b = QPushButton('Teach…'); b.setToolTip('Teach this builder\'s symbols'); b.clicked.connect(self.open_teach); row.addWidget(b)
         b = QPushButton('Start over'); b.setToolTip('Run the cleanup again on the same box. Your changes are lost.')
         b.clicked.connect(self.start_over); row.addWidget(b); v.addLayout(row)
         return w
@@ -1360,7 +1368,7 @@ class MainWindow(QMainWindow):
         est = heights.estimate(words, rooms, names)
         if est is None:
             QMessageBox.information(self, 'Ceiling heights', f'Couldn\'t line up {sh.label} with this plan: not enough of the same room names on both. '
-                                    'Check it\'s the same floor, or use Add a note to type them in.'); return
+                                    'Check it\'s the same floor, or use Add Note to type them in.'); return
         walls = {k for k, v in (self.profile.pen_roles if self.profile else {}).items() if v == 'wall'}
         mine = [p for p in self.sheet.page.get_drawings() if pen_key(p) in walls and in_region(p, self.region)]
         off = heights.refine(mine, self.region, sh.page.get_drawings(), est, walls)

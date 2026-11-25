@@ -343,6 +343,9 @@ def looks_like_elevation(page, region):
     # the bottom third of the box as you see it, back in page points
     band = pymupdf.Rect(d[0], d[1] + (d[3] - d[1]) * 0.66, d[2], d[3]) * page.derotation_matrix
     band.normalize(); b = (band.x0, band.y0, band.x1, band.y1)
+    from .vec import page_text
+    typed = ' '.join(t['text'].upper() for t in page_text(page, b))      # typed titles (Pulte): no reading needed
+    if re.search(r'\bELEVATION\b|\bELEV\b', typed) and not re.search(r'\b(ELECTRICAL|LIGHTING|FLOOR) PLAN\b', typed): return True
     ps = [p for p in pl if in_region(p, b)]
     if not ps: return False
     for sc in (1.5, 2.5):

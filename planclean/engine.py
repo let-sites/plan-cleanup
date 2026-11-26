@@ -98,7 +98,8 @@ def optional_fireplaces(page, full, kept):
     notes = [pymupdf_rect(w[:4]) for w in page.get_text('words') if re.fullmatch(r'F\.?P\.?|FIRE ?PLACES?\.?', w[4].upper())]
     if not notes: return []
     kept_ids = {id(p) for p in kept}
-    gone = [p for p in full if id(p) not in kept_ids]
+    gone = [p for p in full if id(p) not in kept_ids
+            and 'DIM' not in (p.get('layer') or '').upper().split('|')[-1]]    # not the dimensions and centerlines by it
     def gap(a, b): return math.hypot(max(0.0, a[0] - b[2], b[0] - a[2]), max(0.0, a[1] - b[3], b[1] - a[3]))
     back = []
     for nb in notes:

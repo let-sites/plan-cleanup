@@ -39,7 +39,9 @@ def layer_key(path) -> str:
 
 def layer_default(name):
     """A CAD layer named for options (Pulte's A-FP-OPTION) holds optional items: left off unless set to Keep."""
-    return 'remove' if 'OPTION' in name.upper() else 'keep'
+    n = name.upper()
+    # dimension layers too: the cleaned plan has no dimensions (their numbers are left off already)
+    return 'remove' if 'OPTION' in n or 'DIM' in n.split('|')[-1] else 'keep'
 
 def option_wire_layers(paths):
     """Layers that only carry the optional items' wiring (Pulte's bare A-FP-DASH-BELOW): a layer whose dashed runs

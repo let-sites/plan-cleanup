@@ -82,7 +82,8 @@ def usable_examples(page, profile, full, kept):
         # (a fan's blades are the same whether the fan is optional or standard: still worth finding)
         if ex.cls != 'fan' and len(w) >= 4 and os.path.basename(str(w[0])) == name and int(w[1]) == page.number:
             x, y, h = float(w[2]), float(w[3]), max(ex.half, 4.0)
-            near = [p for p in full if abs((p['rect'].x0 + p['rect'].x1) / 2 - x) < h and abs((p['rect'].y0 + p['rect'].y1) / 2 - y) < h]
+            near = [p for p in full if abs((p['rect'].x0 + p['rect'].x1) / 2 - x) < h and abs((p['rect'].y0 + p['rect'].y1) / 2 - y) < h
+                    and 'DIM' not in (p.get('layer') or '').upper()]      # (a dimension or centerline through it doesn't count)
             if near and sum(id(p) not in kept_ids for p in near) >= 0.4 * len(near): continue
         out.append(ex)
     return out
@@ -90,6 +91,33 @@ def usable_examples(page, profile, full, kept):
 
 # a symbol's own label words (they describe the builder's symbol, which the clean one replaces)
 SYMBOL_LABELS = {'GFCI', 'AFCI', 'GFI', 'WP', 'DISK', 'CLG', 'TYP', 'WPGFI', 'GFIWP', 'LED', 'RECEP', 'EXH', 'SD', 'COSD'}
+
+def optional_fireplaces(page, full, kept):
+    """An optional fireplace (and its wiring and switch) stays on the plan for every builder: it's where the TV goes.
+    The left-off paths gathered around a 'F.P.' / 'FIREPLACE' note come back."""
+    notes = [pymupdf_rect(w[:4]) for w in page.get_text('words') if re.fullmatch(r'F\.?P\.?|FIRE ?PLACES?\.?', w[4].upper())]
+    if not notes: return []
+    kept_ids = {id(p) for p in kept}
+    gone = [p for p in full if id(p) not in kept_ids]
+    def gap(a, b): return math.hypot(max(0.0, a[0] - b[2], b[0] - a[2]), max(0.0, a[1] - b[3], b[1] - a[3]))
+    back = []
+    for nb in notes:
+        cluster = [p for p in gone if gap(tuple(p['rect']), nb) <= 30 and id(p) not in {id(q) for q in back}]
+        grown = True
+        while grown:
+            grown = False
+            for p in gone:
+                if p in cluster or p in back: continue
+                r = tuple(p['rect'])
+                if gap(r, nb) > 150: continue
+                if any(gap(r, tuple(q['rect'])) <= 6 for q in cluster): cluster.append(p); grown = True
+        back += cluster
+    return back
+
+
+def pymupdf_rect(t):
+    return (float(t[0]), float(t[1]), float(t[2]), float(t[3]))
+
 
 def same_drawing(hits, paths, texts=()):
     """A builder draws every copy of a symbol with the same stroke (Pulte: a 35-line ring with a tail for each disk
@@ -200,6 +228,20 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     progress('Reading the sheet')
     full = page_paths(page)
     allp = drop_layers(full, profile)
+    if len(allp) < len(full):
+        allp = allp + optional_fireplaces(page, full, allp)
+        # the tick marks of a left-off dimension line (drawn on another layer) go with it
+        kept_ids = {id(p) for p in allp}
+        dim_pts = [(q.x, q.y) for p in full if id(p) not in kept_ids and 'DIM' in (p.get('layer') or '').upper()
+                   for i in p['items'] if i[0] == 'l' for q in (i[1], i[2])]
+        if dim_pts:
+            D = np.array(dim_pts)
+            def _tick(p):
+                r = p['rect']
+                if not is_filled(p) or max(r.width, r.height) > 8: return False
+                cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+                return float(np.hypot(D[:, 0] - cx, D[:, 1] - cy).min()) <= 3.0
+            allp = [p for p in allp if not _tick(p)]
     pl = [p for p in allp if in_region(p, region)]
     dropped_paths = []
     if len(allp) < len(full):           # optional layers left off: their 'OPT.' notes and leaders go too
@@ -224,6 +266,10 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     OUTLET_CLS = ('outlet', 'outlet_240', 'ceiling_outlet', 'floor_outlet')
     hits = detect.classify(img, region, usable_examples(page, profile, full, allp), anc, weak=0.12, weak_cls=OUTLET_CLS)
     hits += typed_switches(texts, hits, profile)
+    # a circle with a lone B or T typed in it is a chime or a thermostat (low voltage): not on the electrical plan
+    bt = [((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2) for l in texts if len(l['text'].strip()) == 1
+          for c, bb in l['chars'] if c in 'BT']
+    if bt: hits = [h for h in hits if not any(math.hypot(h['x'] - x, h['y'] - y) < 6 for x, y in bt)]
     hits += same_drawing(hits, [p for p in symbolish if role(p) == 'electrical'], texts)
     hits += fans_by_blades(hits, [p for p in symbolish if role(p) == 'electrical'])
 
@@ -395,8 +441,6 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             # a builder's own wall light (a coach light on its stem) reaches the wall a little further out
             lim = max(profile.wall_light_max_dist, h.get('hw', 0) + 3.0) if h['cls'] == 'wall_light' else profile.wall_light_max_dist
             h['cls'] = 'wall_light' if d < lim else 'ceiling_light'
-        if h['cls'] in ('ceiling_light', 'disk_light') and 'WP' in h['mods']:
-            h['cls'] = 'wall_light'          # a weatherproof light is an outside wall light
         if h['cls'] == 'ceiling_light' and 'DISK' in h['mods']:
             h['cls'] = 'disk_light'
         # A wall symbol labelled 220V is a 220/240V outlet (its three lines can read as a wall light).
@@ -552,7 +596,7 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             if not it: return []
             a, b = it[0][1], it[-1][-1]
             return [] if abs(a.x - b.x) + abs(a.y - b.y) < 0.2 else [(a.x, a.y), (b.x, b.y)]   # closed: a symbol
-        dro = np.array([e for p in dropped_paths for e in _ends(p)] or np.zeros((0, 2)))
+        dro = np.array([e for p in dropped_paths if 'DIM' not in (p.get('layer') or '').upper() for e in _ends(p)] or np.zeros((0, 2)))
         kep = np.array([e for p in pl if role(p) == 'electrical' for e in _ends(p)] or np.zeros((0, 2)))
         def _d(E, h): return float(np.hypot(E[:, 0] - h['x'], E[:, 1] - h['y']).min()) if len(E) else 1e9
         for i, h in enumerate(hits):
@@ -674,6 +718,8 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
     for k, p in enumerate(pl):
         rl = role(p); r = p['rect']
         if rl == 'remove': removed['removed pens'] += 1; continue
+        if p.get('fill') in (None, (1.0, 1.0, 1.0)) and p.get('color') in (None, (1.0, 1.0, 1.0)):
+            removed['removed pens'] += 1; continue           # white on white (a mask behind a label): invisible
         if titles and rl != 'electrical' and (in_title[k] or underline(r)):
             removed['text strokes'] += 1; continue           # the builder's sheet title: written as clean text
         if id(p) in fan_parts:
@@ -1026,6 +1072,12 @@ def clean_pdf(page, region, profile: Profile, exclude=(), progress=lambda msg: N
             tdx, tdy = h['tdir']; rays = [(0, 1), (0, -1)] if abs(tdx) >= abs(tdy) else [(1, 0), (-1, 0)]
             if all(wall_along(h['x'], h['y'], a, b, 18.0) is None for a, b in rays): rays = None
         d, (ux, uy) = facing(h['x'], h['y'], hint=hint_ends.get(hi, ()), rays=rays)
+        if s.cls == 'wall_light' and d <= 18:
+            # a vanity light the builder drew on the mirror or backsplash line goes on the wall just behind it
+            for _ in range(3):        # (the sink's edge, then the backsplash, then the wall)
+                d2 = wall_along(h['x'] - ux * (d - 1.5), h['y'] - uy * (d - 1.5), -ux, -uy, 7.0)   # 1.5 to 5.5 behind it
+                if d2 is None or d - 1.5 + d2 > 18: break
+                d = d - 1.5 + d2
         s.dx, s.dy = ux, -uy
         if d <= 18: s.wall = d * K      # the block's insert point goes on this wall line (kept for every type: its type can change in review)
         if not s.review and h['score'] < 0.75: s.review = f"Low match ({h['score']:.2f})"

@@ -47,10 +47,12 @@ class Plan:
 
     @staticmethod
     def list_saved():
-        """(name, folder, last changed) for every saved plan, newest first."""
+        """(name, folder, last changed, builder) for every saved plan, newest first."""
         out = []
         for f in Plan.plans_dir().glob('*/plan.json'):
-            try: out.append((json.loads(f.read_text()).get('name', f.parent.name), str(f.parent), f.stat().st_mtime))
+            try:
+                d = json.loads(f.read_text())
+                out.append((d.get('name', f.parent.name), str(f.parent), f.stat().st_mtime, d.get('builder', '') or ''))
             except Exception: pass
         return sorted(out, key=lambda r: -r[2])
 
@@ -223,6 +225,13 @@ def _set_label(e, text):
 
 LEVELS = ['Upper', 'Main', 'Lower']
 LEVEL_GAP = 240.0      # inches between the levels of one plan (20')
+
+
+def is_option(res):
+    """The sheet's title calls it an option: OPT. CHEF'S KITCHEN, OPTIONAL BEDROOM 5, ..."""
+    import re
+    t = ' '.join(' '.join(x.lines) for x in res.texts if x.kind == 'title').upper()
+    return bool(re.search(r"\bOPT(\.|ION|IONAL)?\b", t))
 
 
 def level_rank(res):

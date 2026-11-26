@@ -50,8 +50,8 @@ class OpenPlanDialog(QDialog):
     def refresh(self):
         import time
         self.lst.clear()
-        for name, folder, mt in self.Plan.list_saved():
-            it = QListWidgetItem(f'{name}    ·    {time.strftime("%b %d, %Y %I:%M %p", time.localtime(mt))}')
+        for name, folder, mt, builder in self.Plan.list_saved():
+            it = QListWidgetItem(f'{name}    ·    {builder + "    ·    " if builder else ""}{time.strftime("%b %d, %Y %I:%M %p", time.localtime(mt))}')
             it.setData(Qt.UserRole, folder); it.setSizeHint(QSize(100, 34)); self.lst.addItem(it)
         if self.lst.count(): self.lst.setCurrentRow(0)
         self.ok.setEnabled(self.lst.count() > 0)
@@ -296,8 +296,15 @@ class StartDialog(QDialog):
         recent = Plan.list_saved()[:4]
         if recent:
             row = QHBoxLayout(); lab = QLabel('Continue a recent plan:'); lab.setProperty('kind', 'muted'); row.addWidget(lab)
-            for name, folder, _ in recent:
-                b = QPushButton(name); b.setCursor(Qt.PointingHandCursor); b.setToolTip('Open this saved plan')
+            for name, folder, _, builder in recent:
+                # the plan's name, and the builder under it in small grey text
+                b = QPushButton(); b.setCursor(Qt.PointingHandCursor); b.setToolTip('Open this saved plan')
+                bl = QVBoxLayout(b); bl.setContentsMargins(12, 5, 12, 5); bl.setSpacing(0)
+                n = QLabel(name); n.setStyleSheet('font-weight:600;background:transparent'); bl.addWidget(n)
+                if builder:
+                    sb = QLabel(builder); sb.setStyleSheet('font-size:11px;color:#7a8794;background:transparent'); bl.addWidget(sb)
+                for w in (n, *( [sb] if builder else [])): w.setAttribute(Qt.WA_TransparentForMouseEvents)
+                b.setMinimumSize(bl.sizeHint()); b.setMinimumHeight(bl.sizeHint().height() + 4)
                 b.clicked.connect(lambda *_, f=folder: self._open_recent(f)); row.addWidget(b)
             row.addStretch(); v.addLayout(row)
         sub = QLabel('Name it, add the builder\'s files, and choose the builder. Everything you clean goes into one drawing, '

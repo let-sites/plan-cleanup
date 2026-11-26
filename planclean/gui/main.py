@@ -19,7 +19,7 @@ from planclean.vec import in_region, pen_key
 from planclean import oda, dxfout, dwgin
 from planclean.result import Result, Text, turned, turn_sym
 from planclean.jobs import CleanJob, attach_to_page
-from planclean.plan import Plan, combine, reattach, find_board, on_board, LEVELS, level_rank
+from planclean.plan import Plan, combine, reattach, find_board, on_board, LEVELS, level_rank, is_option
 from planclean.preview import BlockShapes
 from .view import SheetView, CLASS_COLORS
 
@@ -275,8 +275,8 @@ class MainWindow(QMainWindow):
         self.recent_menu.clear()
         saved = Plan.list_saved()[:10]
         if not saved: a = self.recent_menu.addAction('(no saved plans yet)'); a.setEnabled(False); return
-        for name, folder, _ in saved:
-            a = self.recent_menu.addAction(name); a.triggered.connect(lambda *_, f=folder: self.open_plan(f))
+        for name, folder, _, builder in saved:
+            a = self.recent_menu.addAction(f'{name}  ({builder})' if builder else name); a.triggered.connect(lambda *_, f=folder: self.open_plan(f))
 
     def manage_builders(self):
         self._settings_tab = 1
@@ -646,10 +646,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Redo area', f'The file this area came from isn\'t in the plan any more:\n{it.file}\n\nUse Add files… to add it again.'); return
         self.pages.setCurrentRow(si); self.on_page(si)
         self.region = tuple(it.region); self.editing = i
-        self.show_done_boxes()
+        self.view.show_done([])                 # just this cleaned area, fit to the window: no boxes
         (ax, ay), (bx, by) = self.sheet.to_view(it.region[0], it.region[1]), self.sheet.to_view(it.region[2], it.region[3])
-        self.view.show_region(QRectF(min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)))
+        self.view.show_region(QRectF(min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)), visible=False)
         res = reattach(self.plan.result(it), it.kind, self.profile, it.region)
+        self.view.focus_region(True)
         self.on_cleaned(res)
         self.statusBar().showMessage(f'Redoing area {i + 1}. Fix it up, then click Update in plan. Redraw the box to clean it again.')
 
@@ -1114,7 +1115,7 @@ class MainWindow(QMainWindow):
         elev = res.stats.get('kind') == 'elevation'
         if self.editing is not None and self.plan and is_elev(self.plan.items[self.editing].area_type) == elev: guess = self.plan.items[self.editing].area_type
         elif elev: guess = 'Interior elevation' if is_elev(self.area_type.currentText()) and 'Interior' in self.area_type.currentText() else 'Exterior elevation'
-        else: guess = 'Option' if any(t.kind == 'title' and 'OPT' in ' '.join(t.lines) for t in res.texts) else 'Electrical plan'
+        else: guess = 'Option' if is_option(res) else 'Electrical plan'
         if self.area_type.findText(guess) >= 0: self.area_type.setCurrentText(guess)
         self.elev_cb.setVisible(not elev and bool(self.plan and len(self.plan.elevations) > 1))
         if elev:
@@ -1720,8 +1721,10 @@ class MainWindow(QMainWindow):
         if base is not None:
             board = find_board(base)
             if board:
-                plans = [(r, it.elevation, it.level) for r, it in zip(results, items) if it.area_type != 'Option']
-                opts = [r for r, it in zip(results, items) if it.area_type == 'Option']
+                # an area left as a plan whose title says OPT. is an option all the same
+                opt = [it.area_type == 'Option' or (not it.elevation and is_option(r)) for r, it in zip(results, items)]
+                plans = [(r, it.elevation, it.level) for r, it, o in zip(results, items, opt) if not o]
+                opts = [r for r, o in zip(results, opt) if o]
                 res, spill = on_board(board, plans, opts, self.settings.text_height_title, self.plan.project, self.plan.name, self.plan.elevations)
                 if spill:      # more plans than boxes: they go above the board
                     extra = dxfout._moved_clear_of(combine(spill, self.settings.text_height_title), base)

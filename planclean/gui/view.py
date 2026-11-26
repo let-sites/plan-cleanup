@@ -236,12 +236,13 @@ class SheetView(QGraphicsView):
             return
         super().mouseReleaseEvent(e)
 
-    def show_region(self, r):
+    def show_region(self, r, visible=True):
+        """The box being cleaned. visible=False: it only sets what Fit zooms to (an area reopened from the plan)."""
         if self.region_item is not None and self.region_item.scene() is self.scene_:
-            self.region_item.setRect(r); return
+            self.region_item.setRect(r); self.region_item.setVisible(visible); return
         pen = QPen(QColor('#2f7fb0'), 2.5); pen.setCosmetic(True)       # same weight at any zoom
         self.region_item = self.scene_.addRect(r, pen, QBrush(QColor(74, 144, 184, 18)))
-        self.region_item.setZValue(5)
+        self.region_item.setZValue(5); self.region_item.setVisible(visible)
 
     def show_done(self, boxes):
         """Outline areas already added to the plan: (rect, label) pairs."""
